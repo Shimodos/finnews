@@ -1,0 +1,22 @@
+[project]
+name = "finnews"
+version = "0.1.0"
+description = "Ежедневный дайджест финансовых новостей в Telegram"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=1.0",
+    "feedparser>=6.0",
+    "httpx>=0.27",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+finnews = "finnews.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
