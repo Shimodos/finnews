@@ -1,11 +1,12 @@
 import argparse
 import logging
+import os
 import sys
 
-from . import db, telegram
+from . import db, site, telegram
 from .collect import collect
 from .config import load_config
-from .llm import build_digest, score_articles
+from .llm import build_brief, build_digest, score_articles
 
 
 def cmd_collect(cfg, conn, args) -> None:
@@ -41,6 +42,27 @@ def cmd_run(cfg, conn, args) -> None:
     cmd_digest(cfg, conn, args)
 
 
+def cmd_site(cfg, conn, args) -> None:
+    path = site.build(cfg, conn, hours=args.hours, out_dir=args.out)
+    print(f"Страница собрана: {path.resolve()}")
+
+
+def cmd_brief(cfg, conn, args) -> None:
+    done = build_brief(cfg, conn, hours=args.hours)
+    print("Обзор дня готов." if done else "Нет новостей для обзора дня.")
+
+
+def cmd_update(cfg, conn, args) -> None:
+    """Всё для сайта: сбор, оценка с переводом, обзор дня, страница."""
+    cmd_collect(cfg, conn, args)
+    if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
+        cmd_score(cfg, conn, args)
+        cmd_brief(cfg, conn, args)
+    else:
+        print("ANTHROPIC_API_KEY не задан — пропускаю оценку, перевод и обзор дня.")
+    cmd_site(cfg, conn, args)
+
+
 def cmd_chat_id(cfg, conn, args) -> None:
     if not cfg.telegram_token:
         sys.exit("Сначала задай TELEGRAM_BOT_TOKEN в .env")
@@ -63,6 +85,17 @@ def main() -> None:
         p = sub.add_parser(name, help=help_)
         p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")
         p.add_argument("--dry-run", action="store_true", help="вывести в консоль, не отправлять")
+        p.set_defaults(func=func)
+    p = sub.add_parser("brief", help="написать обзор дня на трёх языках")
+    p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")
+    p.set_defaults(func=cmd_brief)
+    for name, func, help_ in (
+        ("site", cmd_site, "собрать веб-страницу с новостями"),
+        ("update", cmd_update, "всё для сайта: collect + score + brief + site"),
+    ):
+        p = sub.add_parser(name, help=help_)
+        p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")
+        p.add_argument("--out", default="site", help="папка для index.html")
         p.set_defaults(func=func)
     sub.add_parser("chat-id", help="показать chat_id для Telegram").set_defaults(func=cmd_chat_id)
 

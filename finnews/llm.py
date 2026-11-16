@@ -1,5 +1,7 @@
+import json
 import logging
 from datetime import datetime, timezone
+from typing import Literal
 
 import anthropic
 from pydantic import BaseModel
@@ -9,7 +11,7 @@ from .config import Config
 
 log = logging.getLogger(__name__)
 
-BATCH = 25
+BATCH = 15  # перевод на два языка заметно увеличивает ответ, поэтому пакеты небольшие
 
 SCORE_SYSTEM = """Ты редактор ленты финансовых новостей для начинающего частного инвестора, \
 который покупает акции и ETF на долгий срок.
@@ -24,8 +26,33 @@ SCORE_SYSTEM = """Ты редактор ленты финансовых ново
 реклама, повтор уже известного.
 
 tickers — биржевые тикеры компаний и фондов, которых новость касается напрямую (может быть пусто).
-reason — одна короткая фраза по-русски, почему такая оценка.
-Верни оценку для каждого index из списка."""
+sector — сфера: macro (экономика, ФРС, ставки, инфляция), markets (рынок в целом, индексы), \
+tech, finance (банки, страхование, финансы), energy (энергетика и сырьё), health, \
+consumer (розница, товары и услуги для людей), industry (промышленность, транспорт), crypto, other.
+tone — как новость скорее сказывается на затронутых бумагах или рынке: positive, negative \
+или neutral. Если из новости это не следует — neutral.
+title_ru, title_uk — точный перевод заголовка на русский и украинский, без добавлений.
+summary_ru, summary_uk — перевод описания на русский и украинский; если описания нет — пустая строка.
+why_ru, why_uk, why_en — одно короткое предложение на русском, украинском и английском: \
+что эта новость значит для обычного долгосрочного инвестора. Простыми словами, без советов \
+покупать или продавать. Смысл на трёх языках одинаковый.
+Названия компаний и тикеры не переводи. Верни оценку для каждого index из списка."""
+
+BRIEF_SYSTEM = """Ты объясняешь начинающему инвестору, что сегодня происходит на рынке США. \
+Он покупает акции и ETF на долгий срок и хочет понимать картину, а не получать торговые сигналы.
+
+Тебе дают отобранные новости за последние сутки с оценкой важности. Используй только факты \
+из этих новостей, не придумывай цифры и события.
+
+Верни один и тот же обзор на трёх языках — ru (русский), uk (украинский), en (английский):
+- overview — 2-3 предложения: общая картина дня, что двигает рынок и в какую сторону.
+- points — от 3 до 5 коротких пунктов: самые важные события и почему каждое из них важно \
+для обычного инвестора.
+- term — один термин, который встретился в новостях.
+- term_explained — его объяснение в 2-3 предложениях простыми словами.
+
+Правила: простой язык; не давай советов покупать или продавать конкретные бумаги; \
+названия компаний и тикеры не переводи."""
 
 DIGEST_SYSTEM = """Ты пишешь ежедневный дайджест финансовых новостей на русском языке \
 для начинающего инвестора. Он только начинает покупать ценные бумаги и хочет понимать, \
@@ -52,15 +79,41 @@ DIGEST_SYSTEM = """Ты пишешь ежедневный дайджест фи�
 - Весь дайджест — не длиннее 3500 знаков."""
 
 
+Sector = Literal[
+    "macro", "markets", "tech", "finance", "energy", "health", "consumer", "industry", "crypto", "other"
+]
+
+
 class Score(BaseModel):
     index: int
     score: int
     tickers: list[str]
-    reason: str
+    sector: Sector
+    tone: Literal["positive", "negative", "neutral"]
+    title_ru: str
+    title_uk: str
+    summary_ru: str
+    summary_uk: str
+    why_ru: str
+    why_uk: str
+    why_en: str
 
 
 class ScoreBatch(BaseModel):
     items: list[Score]
+
+
+class BriefText(BaseModel):
+    overview: str
+    points: list[str]
+    term: str
+    term_explained: str
+
+
+class Brief(BaseModel):
+    ru: BriefText
+    uk: BriefText
+    en: BriefText
 
 
 def _text(response) -> str:
@@ -104,11 +157,50 @@ def score_articles(cfg: Config, conn, client: anthropic.Anthropic | None = None)
                     batch[item.index]["id"],
                     max(0, min(10, item.score)),
                     [t.upper() for t in item.tickers],
-                    item.reason,
+                    item.why_ru,
+                    sector=item.sector,
+                    tone=item.tone,
+                    i18n=json.dumps(
+                        {
+                            "ru": {"title": item.title_ru, "summary": item.summary_ru, "why": item.why_ru},
+                            "uk": {"title": item.title_uk, "summary": item.summary_uk, "why": item.why_uk},
+                            "en": {"why": item.why_en},
+                        },
+                        ensure_ascii=False,
+                    ),
                 )
                 done += 1
         conn.commit()
     return done
+
+
+def build_brief(
+    cfg: Config, conn, *, hours: int = 24, client: anthropic.Anthropic | None = None
+) -> bool:
+    """Пишет обзор дня на трёх языках и сохраняет его в базу. False — новостей для обзора нет."""
+    rows = db.top_recent(conn, min_score=cfg.min_score, hours=hours, limit=cfg.max_digest_items)
+    if not rows:
+        return False
+    client = client or anthropic.Anthropic()
+    listing = "\n\n".join(
+        f"[{r['score']}/10] {r['title']}\nисточник: {r['source']}\nтикеры: {r['tickers'] or '-'}\n"
+        f"описание: {r['summary'][:600]}"
+        for r in rows
+    )
+    now = datetime.now().astimezone()
+    response = client.messages.parse(
+        model=cfg.digest_model,
+        max_tokens=16000,
+        output_config={"effort": "medium"},
+        system=BRIEF_SYSTEM,
+        messages=[{"role": "user", "content": f"Дата: {now:%d.%m.%Y}\n\nНовости:\n\n{listing}"}],
+        output_format=Brief,
+    )
+    if response.stop_reason != "end_turn" or response.parsed_output is None:
+        raise RuntimeError(f"Обзор дня не сгенерирован: stop_reason={response.stop_reason}")
+    db.save_brief(conn, now.date().isoformat(), response.parsed_output.model_dump_json())
+    conn.commit()
+    return True
 
 
 def build_digest(
