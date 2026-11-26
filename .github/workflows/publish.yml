@@ -1,0 +1,63 @@
+name: Publish site
+
+# Собирает новости, оценивает их через Claude и публикует страницу на GitHub Pages.
+# Нужен секрет репозитория ANTHROPIC_API_KEY; без него страница выйдет без перевода и оценок.
+
+on:
+  schedule:
+    # Время в UTC. По Киеву зимой: 07:00, 14:00, 18:00 и 23:30 (после закрытия биржи США).
+    - cron: "0 5,12,16 * * *"
+    - cron: "30 21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Одна публикация за раз; начатую не прерываем.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      TZ: Europe/Kyiv # время на странице и границы дня в архиве
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      # База хранит оценки, переводы и обзоры: без неё каждая сборка платила бы за всё заново,
+      # а архив и словарик обнулялись бы. Ключ с номером запуска — чтобы кэш сохранялся каждый раз.
+      - name: Restore database
+        uses: actions/cache@v6
+        with:
+          path: finnews.db
+          key: finnews-db-${{ github.run_id }}
+          restore-keys: finnews-db-
+
+      - name: Install
+        run: pip install .
+
+      - name: Build site
+        run: finnews update
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          WATCHLIST: ${{ vars.WATCHLIST || 'VOO,VT,AAPL' }}
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v5
