@@ -234,15 +234,12 @@ footer { margin: 56px 0 0; color: var(--muted); }
 }
 """
 
-# Выбор языка до отрисовки, чтобы страница не мигала: сохранённый, иначе язык браузера.
+# Выбор языка до отрисовки, чтобы страница не мигала: сохранённый выбор, иначе английский.
 HEAD_JS = """
 (function () {
   var l = null;
   try { l = localStorage.getItem('finnews-lang'); } catch (e) {}
-  if (['ru', 'uk', 'en'].indexOf(l) < 0) {
-    var n = (navigator.language || 'ru').toLowerCase();
-    l = n.indexOf('uk') === 0 ? 'uk' : n.indexOf('ru') === 0 ? 'ru' : 'en';
-  }
+  if (['ru', 'uk', 'en'].indexOf(l) < 0) l = 'en';
   document.documentElement.dataset.lang = l;
   document.documentElement.lang = l;
 })();
@@ -569,12 +566,12 @@ def _feed(cfg: Config, rows, today, quotes: dict) -> str:
 def _shell(title: str, content: str) -> str:
     """Общая обвязка страниц: шапка со ссылками и языками, шрифты, стили, скрипт."""
     langs = "".join(
-        f'<button type="button" data-setlang="{lang}" aria-pressed="{str(lang == "ru").lower()}">{lang}</button>'
+        f'<button type="button" data-setlang="{lang}" aria-pressed="{str(lang == "en").lower()}">{lang}</button>'
         for lang in LANGS
     )
     links = "".join(f'<a href="{href}">{_ui(key)}</a>' for href, key in PAGES)
     return f"""<!doctype html>
-<html lang="ru" data-lang="ru">
+<html lang="en" data-lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -639,7 +636,7 @@ def render_day(cfg: Config, conn, day, brief: dict) -> str:
         f'{_feed(cfg, rows, datetime.now().astimezone().date(), {})}'
         f'<footer>{_ui("disclaimer")}</footer>'
     )
-    return _shell(_date(day)[0], content)
+    return _shell(_date(day)[2], content)
 
 
 def render_archive(conn) -> str:
@@ -652,7 +649,7 @@ def render_archive(conn) -> str:
         for day, data in _brief_days(conn)
     )
     content = f'<h1>{_ui("nav_archive")}</h1>{entries or _ui("no_archive", "p", "empty")}'
-    return _shell(UI["nav_archive"][0], content + f'<footer>{_ui("disclaimer")}</footer>')
+    return _shell(UI["nav_archive"][2], content + f'<footer>{_ui("disclaimer")}</footer>')
 
 
 def render_glossary(conn) -> str:
@@ -670,7 +667,7 @@ def render_glossary(conn) -> str:
             + "</div>"
         )
     content = f'<h1>{_ui("nav_glossary")}</h1>{"".join(entries) or _ui("no_glossary", "p", "empty")}'
-    return _shell(UI["nav_glossary"][0], content + f'<footer>{_ui("disclaimer")}</footer>')
+    return _shell(UI["nav_glossary"][2], content + f'<footer>{_ui("disclaimer")}</footer>')
 
 
 def render(cfg: Config, conn, *, hours: int = 24) -> str:
@@ -700,7 +697,7 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
 {_movers(market, rows)}
 {_feed(cfg, rows, today, quotes)}
 <footer>{_ui("disclaimer")}{quotes_note}</footer>"""
-    return _shell(_date(today)[0], content)
+    return _shell(_date(today)[2], content)
 
 
 def build(cfg: Config, conn, *, hours: int = 24, out_dir: str = "site") -> Path:
