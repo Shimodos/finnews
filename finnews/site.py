@@ -11,8 +11,10 @@ from pathlib import Path
 
 from . import db
 from .config import Config
+from .market import SECTOR_SYMBOLS
 
 LANGS = ("ru", "uk", "en")
+STORY_MIN_SCORE = 4  # новости с оценкой 0-3 — шум, движение акции ими не объясняем
 
 MONTHS = {
     "ru": ["января", "февраля", "марта", "апреля", "мая", "июня",
@@ -53,6 +55,18 @@ UI = {
     "brief": ("Главное за день", "Головне за день", "Today in brief"),
     "term": ("Термин дня", "Термін дня", "Term of the day"),
     "score": ("важность", "важливість", "importance"),
+    "pulse": ("Пульс рынка", "Пульс ринку", "Market pulse"),
+    "movers": ("Кто двигался и почему", "Хто рухався і чому", "Who moved and why"),
+    "no_story": (
+        "в ленте новостей об этом нет",
+        "у стрічці новин про це немає",
+        "no related story in the feed",
+    ),
+    "quotes_note": (
+        "Котировки: Yahoo Finance, на момент обновления страницы.",
+        "Котирування: Yahoo Finance, на момент оновлення сторінки.",
+        "Quotes: Yahoo Finance, as of the page update.",
+    ),
     "empty": (
         "Новостей за это время нет. Запусти finnews collect.",
         "Новин за цей час немає. Запусти finnews collect.",
@@ -94,7 +108,8 @@ body {
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }
 main { max-width: 720px; margin: 0 auto; padding: 56px 20px 96px; }
-.mark, .stat, nav button, .day h2, .brief h2, time, .meta, .term b, footer {
+.mark, .stat, nav button, .day h2, .brief h2, .market h2, time, .meta, .term b, footer,
+.quote .name, .quote .chg, .mover .sym, .mover .pct {
   font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em;
 }
 .top { display: flex; justify-content: space-between; align-items: center; margin: 0 0 44px; }
@@ -113,10 +128,38 @@ h1 .weekday { display: block; color: var(--muted); font-weight: 400; }
 .stat { color: var(--muted); margin: 24px 0 0; }
 .note { color: var(--muted); font-size: 15px; margin: 12px 0 0; }
 .brief { margin: 48px 0 0; padding: 0 0 8px; }
-.brief h2, .day h2 {
+.brief h2, .day h2, .market h2 {
   margin: 0; padding: 12px 0; border-bottom: 1px solid var(--text);
   font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em;
 }
+.market { margin: 48px 0 0; }
+.market h2 .asof { color: var(--muted); font-weight: 400; }
+.quotes {
+  display: grid; grid-auto-flow: column; gap: 0 28px;
+  grid-auto-columns: max(140px, calc((100% - 84px) / 4));
+  overflow-x: auto; scroll-snap-type: x proximity; overscroll-behavior-x: contain;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+  border-bottom: 1px solid var(--line);
+}
+.quotes.scrollable { cursor: grab; }
+.quotes.dragging { cursor: grabbing; user-select: none; scroll-snap-type: none; }
+.quotes:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.quote { padding: 16px 0 14px; scroll-snap-align: start; }
+.quote .name { display: block; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quote .price { display: block; margin-top: 4px; font-size: 20px; font-weight: 500; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.quote svg { display: block; width: 100%; height: 30px; margin-top: 10px; overflow: visible; }
+.quote polyline { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.quote line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.5; vector-effect: non-scaling-stroke; }
+.mover {
+  display: grid; grid-template-columns: 64px 1fr auto; gap: 2px 12px; align-items: baseline;
+  padding: 14px 0; border-bottom: 1px solid var(--line);
+}
+.mover .sym { font-weight: 500; }
+.mover .pct, .quote .chg, nav .chg { font-variant-numeric: tabular-nums; }
+.mover .because { grid-column: 2 / -1; margin: 0; font-size: 15px; color: var(--muted); }
+.mover .because a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
+.mover .because a:hover { color: var(--text); text-decoration-color: var(--accent); }
+nav .chg { margin-left: 5px; }
 .brief .overview { font-size: 21px; line-height: 1.4; letter-spacing: -0.01em; margin: 20px 0 0; text-wrap: pretty; }
 .brief ul { margin: 20px 0 0; padding: 0; list-style: none; }
 .brief li { padding: 10px 0 10px 20px; border-top: 1px solid var(--line); position: relative; }
@@ -157,6 +200,7 @@ footer { margin: 56px 0 0; color: var(--muted); }
   main { padding-top: 32px; }
   article { grid-template-columns: 1fr; }
   time { padding: 0 0 4px; }
+  .mover { grid-template-columns: 52px 1fr auto; }
 }
 """
 
@@ -210,6 +254,27 @@ function setLang(l) {
 }
 langs.forEach(b => b.addEventListener('click', () => setLang(b.dataset.setlang)));
 setLang(root.dataset.lang);
+
+// Ленту котировок можно тянуть мышью: нажал и повёл. На тач-экранах прокрутка и так родная.
+const strip = document.querySelector('.quotes');
+if (strip) {
+  let drag = false, startX = 0, startLeft = 0;
+  const fits = () => strip.classList.toggle('scrollable', strip.scrollWidth > strip.clientWidth);
+  fits();
+  addEventListener('resize', fits);
+  strip.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    drag = true; startX = e.clientX; startLeft = strip.scrollLeft;
+    strip.setPointerCapture(e.pointerId);
+    strip.classList.add('dragging');
+  });
+  strip.addEventListener('pointermove', e => {
+    if (drag) strip.scrollLeft = startLeft - (e.clientX - startX);
+  });
+  const stop = () => { drag = false; strip.classList.remove('dragging'); };
+  strip.addEventListener('pointerup', stop);
+  strip.addEventListener('pointercancel', stop);
+}
 """
 
 
@@ -313,7 +378,93 @@ def _brief(data: dict) -> str:
     return "".join(parts)
 
 
-def _controls(rows, by_sector: bool, any_scored: bool) -> str:
+def _pct(change: float) -> str:
+    """Изменение за день: цвет, знак и проценты."""
+    cls = "up" if change > 0 else "down" if change < 0 else ""
+    text = f"{change:+.2f}%".replace("-", "−")
+    return f'<span class="chg {cls}">{text}</span>'
+
+
+def _spark(points: list, prev: float, change: float) -> str:
+    """График за день без осей; пунктир — вчерашнее закрытие."""
+    if len(points) < 2:
+        return ""
+    low, high = min(*points, prev), max(*points, prev)
+    span = (high - low) or 1
+
+    def y(value: float) -> str:
+        return f"{27 - (value - low) / span * 24:.1f}"
+
+    step = 100 / (len(points) - 1)
+    line = " ".join(f"{i * step:.1f},{y(p)}" for i, p in enumerate(points))
+    cls = "up" if change > 0 else "down" if change < 0 else ""
+    return (
+        f'<svg class="{cls}" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">'
+        f'<line x1="0" x2="100" y1="{y(prev)}" y2="{y(prev)}"/><polyline points="{line}"/></svg>'
+    )
+
+
+def _pulse(data: dict) -> str:
+    quotes = data.get("quotes") or {}
+    symbols = [s for s in data.get("pulse") or [] if s in quotes]
+    if not symbols:
+        return ""
+    # Время последней сделки по первому символу (индекс): в выходной это прошлая сессия.
+    moment = datetime.fromisoformat(quotes[symbols[0]]["time"]).astimezone()
+    asof = _tr([f"· {d}, {moment:%H:%M}" for d in _date(moment.date())], "span", "asof")
+    cards = "".join(
+        '<div class="quote">'
+        f'<span class="name">{escape(q["name"] if s.startswith("^") else s)}</span>'
+        f'<span class="price">{q["price"]:,.2f}</span>{_pct(q["change"])}'
+        f'{_spark(q.get("points") or [], q["prev"], q["change"])}</div>'
+        for s, q in ((s, quotes[s]) for s in symbols)
+    )
+    return (
+        f'<section class="market pulse"><h2>{_ui("pulse")} {asof}</h2>'
+        f'<div class="quotes" tabindex="0">{cards}</div></section>'
+    )
+
+
+def _movers(data: dict, rows, count: int = 3) -> str:
+    """Лидеры роста и падения среди крупных компаний и новость из ленты, которая это объясняет."""
+    stocks = [(s, q) for s, q in (data.get("quotes") or {}).items() if q.get("type") == "EQUITY"]
+    gainers = sorted((x for x in stocks if x[1]["change"] > 0), key=lambda x: -x[1]["change"])[:count]
+    losers = sorted((x for x in stocks if x[1]["change"] < 0), key=lambda x: x[1]["change"])[:count]
+    if not gainers and not losers:
+        return ""
+    stories: dict = {}
+    for row in rows:
+        if (row["score"] or 0) < STORY_MIN_SCORE:
+            continue
+        for ticker in filter(None, row["tickers"].split(",")):
+            best = stories.get(ticker)
+            if best is None or (row["score"] or 0) > (best["score"] or 0):
+                stories[ticker] = row
+    items = []
+    for symbol, q in gainers + losers:
+        row = stories.get(symbol)
+        if row is not None and row["url"].startswith(("http://", "https://")):
+            i18n = _loads(row["i18n"])
+            titles = [
+                escape((i18n.get("ru") or {}).get("title") or row["title"]),
+                escape((i18n.get("uk") or {}).get("title") or row["title"]),
+                escape(row["title"]),
+            ]
+            because = (
+                f'<a href="{escape(row["url"])}" target="_blank" rel="noopener noreferrer">{_tr(titles)}</a>'
+            )
+        else:
+            because = _ui("no_story")
+        items.append(
+            f'<div class="mover"><span class="sym">{escape(symbol)}</span>'
+            f'<span class="co">{escape(q["name"])}</span>'
+            f'<span class="pct">{_pct(q["change"])}</span>'
+            f'<p class="because">{because}</p></div>'
+        )
+    return f'<section class="market movers"><h2>{_ui("movers")}</h2>{"".join(items)}</section>'
+
+
+def _controls(rows, by_sector: bool, any_scored: bool, quotes: dict) -> str:
     navs = []
     if any_scored:
         navs.append(
@@ -324,7 +475,16 @@ def _controls(rows, by_sector: bool, any_scored: bool) -> str:
         )
     if by_sector:
         present = {r["sector"] or "other" for r in rows}
-        groups = [(k, _tr([escape(s) for s in SECTORS[k]])) for k in SECTORS if k in present]
+        # Рядом со сферой — изменение её отраслевого фонда за день, если котировка есть.
+        groups = [
+            (
+                k,
+                _tr([escape(s) for s in SECTORS[k]])
+                + (_pct(quotes[SECTOR_SYMBOLS[k]]["change"]) if SECTOR_SYMBOLS.get(k) in quotes else ""),
+            )
+            for k in SECTORS
+            if k in present
+        ]
     else:
         groups = [(s, escape(s)) for s in sorted({r["source"] for r in rows})]
     if len(groups) > 1:
@@ -375,6 +535,9 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
         for lang in LANGS
     )
     note = "" if any_scored else _ui("no_ai", "p", "note")
+    market = _loads(db.latest_market(conn, hours=hours))
+    quotes = market.get("quotes") or {}
+    quotes_note = f" {_ui('quotes_note')}" if quotes else ""
     return f"""<!doctype html>
 <html lang="ru" data-lang="ru">
 <head>
@@ -394,10 +557,12 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
 <h1>{_tr(_date(today))}{weekday}</h1>
 <p class="stat">{stat}</p>
 {note}
+{_pulse(market)}
 {_brief(_loads(db.latest_brief(conn, hours=hours)))}
-{_controls(rows, by_sector, any_scored)}
+{_movers(market, rows)}
+{_controls(rows, by_sector, any_scored, quotes)}
 {body}
-<footer>{_ui("disclaimer")}</footer>
+<footer>{_ui("disclaimer")}{quotes_note}</footer>
 </main>
 <script>{JS}</script>
 </body>

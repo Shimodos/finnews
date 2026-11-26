@@ -133,3 +133,58 @@ def test_site_translated(tmp_path):
     assert "data-sort" in page
     # обзор дня: экранирован и на своём языке
     assert "Обзор &lt;дня&gt;" in page and "Огляд дня" in page
+    assert 'class="market' not in page  # без котировок блоков рынка нет
+
+
+def fake_yahoo(symbol):
+    """Ответ в формате эндпоинта графиков Yahoo; для одного символа — отказ."""
+    if symbol == "MSFT":
+        raise RuntimeError("нет ответа")
+    price = {"^GSPC": 101.0, "AAPL": 110.0, "NVDA": 95.0, "XLK": 99.0}.get(symbol, 100.0)
+    kind = "INDEX" if symbol.startswith("^") else "ETF" if symbol.startswith("XL") else "EQUITY"
+    return {"chart": {"result": [{
+        "meta": {
+            "symbol": symbol, "shortName": f"{symbol} <Inc>", "instrumentType": kind,
+            "regularMarketPrice": price, "chartPreviousClose": 100.0, "regularMarketTime": 1795640400,
+        },
+        "indicators": {"quote": [{"close": [100.0, None, 100.5, price]}]},
+    }]}}
+
+
+def test_market(tmp_path):
+    import json
+
+    from finnews import market, site
+
+    cfg = Config(db_path=str(tmp_path / "t.db"), watchlist=["AAPL"])
+    data = market.snapshot(cfg, get=fake_yahoo)
+    assert data["pulse"] == ["^GSPC", "^IXIC", "^DJI", "AAPL"]
+    assert "MSFT" not in data["quotes"]  # отказ по одному символу не мешает остальным
+    assert data["quotes"]["^GSPC"]["name"] == "S&P 500"
+    assert data["quotes"]["AAPL"]["change"] == 10.0
+    assert data["quotes"]["AAPL"]["points"] == [100.0, 100.5, 110.0]
+    assert "points" not in data["quotes"]["NVDA"]  # график нужен только в «пульсе»
+
+    conn = db.connect(cfg.db_path)
+    for i, title in enumerate(["Apple beats earnings", "Fed holds rates"]):
+        db.insert_article(
+            conn, url=f"https://example.com/{i}", title=title, title_key=title_key(title),
+            summary="", source="Test", published=db.now_iso(),
+        )
+    assert score_articles(cfg, conn, client=FakeClient()) == 2
+    fed = conn.execute("SELECT id FROM articles WHERE title = 'Fed holds rates'").fetchone()["id"]
+    db.save_score(conn, fed, 9, [], "", sector="macro")
+    db.save_market(conn, json.dumps(data))
+    page = site.render(cfg, conn)
+
+    pulse = page.split('class="market pulse"')[1].split("</section>")[0]
+    assert pulse.count('class="quote"') == 4 and "<polyline" in pulse
+    assert "+1.00%" in pulse and "110.00" in pulse
+    movers = page.split('class="market movers"')[1].split("</section>")[0]
+    assert movers.count('class="mover"') == 2  # один вырос, один упал; остальные без изменений
+    assert "AAPL &lt;Inc&gt;" in movers and "+10.00%" in movers and "−5.00%" in movers
+    assert 'href="https://example.com/0"' in movers  # рост AAPL объяснён новостью из ленты
+    assert "в ленте новостей об этом нет" in movers  # по NVDA новости нет
+    # у сферы «Технологии» — изменение её фонда, у «Экономики» фонда нет
+    assert '<span class="chg down">−1.00%</span></button>' in page
+    assert page.count("−1.00%") == 1

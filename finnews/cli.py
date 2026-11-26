@@ -1,9 +1,10 @@
 import argparse
+import json
 import logging
 import os
 import sys
 
-from . import db, site, telegram
+from . import db, market, site, telegram
 from .collect import collect
 from .config import load_config
 from .llm import build_brief, build_digest, score_articles
@@ -52,9 +53,20 @@ def cmd_brief(cfg, conn, args) -> None:
     print("Обзор дня готов." if done else "Нет новостей для обзора дня.")
 
 
+def cmd_prices(cfg, conn, args) -> None:
+    data = market.snapshot(cfg)
+    if not data["quotes"]:
+        print("Котировки недоступны — страница соберётся без них.")
+        return
+    db.save_market(conn, json.dumps(data, ensure_ascii=False))
+    conn.commit()
+    print(f"Котировок получено: {len(data['quotes'])}")
+
+
 def cmd_update(cfg, conn, args) -> None:
-    """Всё для сайта: сбор, оценка с переводом, обзор дня, страница."""
+    """Всё для сайта: сбор, котировки, оценка с переводом, обзор дня, страница."""
     cmd_collect(cfg, conn, args)
+    cmd_prices(cfg, conn, args)
     if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
         cmd_score(cfg, conn, args)
         cmd_brief(cfg, conn, args)
@@ -78,6 +90,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("collect", help="собрать новости из лент").set_defaults(func=cmd_collect)
     sub.add_parser("score", help="оценить важность новых статей").set_defaults(func=cmd_score)
+    sub.add_parser("prices", help="получить котировки для страницы").set_defaults(func=cmd_prices)
     for name, func, help_ in (
         ("digest", cmd_digest, "собрать и отправить дайджест"),
         ("run", cmd_run, "всё сразу: collect + score + digest"),
@@ -91,7 +104,7 @@ def main() -> None:
     p.set_defaults(func=cmd_brief)
     for name, func, help_ in (
         ("site", cmd_site, "собрать веб-страницу с новостями"),
-        ("update", cmd_update, "всё для сайта: collect + score + brief + site"),
+        ("update", cmd_update, "всё для сайта: collect + prices + score + brief + site"),
     ):
         p = sub.add_parser(name, help=help_)
         p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")

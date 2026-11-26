@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS briefs (
     created_at TEXT NOT NULL,
     data       TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS market (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    created_at TEXT NOT NULL,
+    data       TEXT NOT NULL
+);
 """
 
 # Колонки, появившиеся после первой версии: добавляются в уже существующую базу.
@@ -104,6 +109,19 @@ def latest_brief(conn, *, hours: int) -> str:
     row = conn.execute(
         "SELECT data FROM briefs WHERE created_at >= ? ORDER BY created_at DESC LIMIT 1", (since,)
     ).fetchone()
+    return row["data"] if row else ""
+
+
+def save_market(conn, data: str) -> None:
+    """Хранится только последний снимок котировок."""
+    conn.execute(
+        "INSERT OR REPLACE INTO market (id, created_at, data) VALUES (1, ?, ?)", (now_iso(), data)
+    )
+
+
+def latest_market(conn, *, hours: int) -> str:
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    row = conn.execute("SELECT data FROM market WHERE created_at >= ?", (since,)).fetchone()
     return row["data"] if row else ""
 
 
