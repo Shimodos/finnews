@@ -175,6 +175,23 @@ def test_site_translated(tmp_path):
     assert 'id="q"' in archive and "search.json" in archive
     glossary = (out / "glossary.html").read_text(encoding="utf-8")
     assert "ETF" in glossary and "Фонд" in glossary
+    assert 'class="info"' in glossary and 'role="tooltip"' in glossary  # значок с подсказкой
+
+    # словарик: тот же термин под другим названием — повтор; остаётся самая свежая запись
+    def term(name, text):
+        part = {"overview": "", "points": [], "term": name, "term_explained": text}
+        return json.dumps({"ru": part, "uk": part, "en": part})
+
+    db.save_brief(conn, "2026-01-05", term("CDS (кредитный дефолтный своп)", "старое объяснение"))
+    db.save_brief(conn, "2026-01-06", term("Кредитный дефолтный своп (CDS)", "свежее объяснение"))
+    db.save_brief(conn, "2026-01-07", term("Дивиденд", "доля прибыли"))
+    glossary = site.render_glossary(conn)
+    assert glossary.count('class="entry"') == 3  # ETF, CDS один раз, дивиденд
+    assert "свежее объяснение" in glossary and "старое объяснение" not in glossary
+    # модели напоминают уже объяснённые термины прошлых дней
+    client = FakeClient()
+    assert build_brief(cfg, conn, client=client)
+    assert "уже объяснённые в прошлые дни: Дивиденд; Кредитный дефолтный своп (CDS); CDS" in client.brief_prompt
     day_page = (out / days[0]).read_text(encoding="utf-8")
     assert "Обзор &lt;дня&gt;" in day_page and "Заголовок по-русски" in day_page
     assert 'href="archive.html"' in page and 'href="glossary.html"' in page

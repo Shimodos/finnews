@@ -168,6 +168,17 @@ UI = {
         "Терміни з'являться після першого огляду дня.",
         "Terms appear after the first daily brief.",
     ),
+    "glossary_tip": (
+        "Каждый день в обзоре дня объясняется один термин, который встретился в новостях. "
+        "Термин выбирает и объясняет ИИ, опираясь на новости этого дня. Сюда попадают все "
+        "такие термины; повтор показывается один раз, в самой свежей формулировке.",
+        "Щодня в огляді дня пояснюється один термін, який трапився в новинах. "
+        "Термін обирає і пояснює ШІ, спираючись на новини цього дня. Сюди потрапляють усі "
+        "такі терміни; повтор показується один раз, у найсвіжішому формулюванні.",
+        "Each daily brief explains one term that came up in the news. The term is picked and "
+        "explained by AI, based on that day's stories. All of those terms end up here; "
+        "a repeated term is shown once, in its latest wording.",
+    ),
     "pulse": ("Пульс рынка", "Пульс ринку", "Market pulse"),
     "movers": ("Кто двигался и почему", "Хто рухався і чому", "Who moved and why"),
     "week_title": ("Обзор недели", "Огляд тижня", "Week in review"),
@@ -275,7 +286,21 @@ main { max-width: 720px; margin: 0 auto; padding: 56px 20px 96px; }
   display: grid; grid-template-columns: 1fr; gap: 6px; padding: 20px 0;
   border-bottom: 1px solid var(--line); color: inherit; text-decoration: none;
 }
-h1 + .entry { margin-top: 40px; border-top: 1px solid var(--text); }
+h1 + .entry, .titled + .entry { margin-top: 40px; border-top: 1px solid var(--text); }
+.titled { position: relative; display: flex; align-items: flex-start; gap: 14px; }
+.info {
+  flex: none; width: 22px; height: 22px; margin-top: 8px; padding: 0; border-radius: 50%;
+  border: 1px solid var(--muted); background: none; color: var(--muted); cursor: help;
+  font: 500 12px/1 var(--mono); appearance: none;
+}
+.info:hover, .info:focus-visible { color: var(--text); border-color: var(--text); outline: none; }
+.tip {
+  position: absolute; left: 0; top: 100%; z-index: 5; max-width: 440px; margin-top: 12px;
+  padding: 12px 14px; border-radius: 8px; background: var(--text); color: var(--bg);
+  font-size: 14px; line-height: 1.45; opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity 0.15s;
+}
+.info:hover + .tip, .info:focus + .tip { opacity: 1; visibility: visible; }
 .search { display: block; margin: 40px 0 0; color: var(--muted); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
 .search input {
   display: block; width: 100%; margin-top: 6px; padding: 8px 0 10px; border: 0; border-radius: 0;
@@ -1236,21 +1261,41 @@ def search_index(cfg: Config, conn) -> list[dict]:
     return index
 
 
+def term_keys(names: dict) -> set[str]:
+    """Ключи для сравнения терминов: набор слов названия на каждом языке, без порядка и знаков.
+
+    «CDS (кредитный дефолтный своп)» и «Кредитный дефолтный своп (CDS)» дают один ключ.
+    names — {язык: название}.
+    """
+    keys = set()
+    for lang, name in names.items():
+        words = sorted(set(re.findall(r"\w+", str(name or "").lower())))
+        if words:
+            keys.add(f"{lang}:{' '.join(words)}")
+    return keys
+
+
 def render_glossary(conn) -> str:
     """Все «термины дня» из обзоров; повтор термина показывается один раз, самый свежий."""
     seen, entries = set(), []
     for day, data in _brief_days(conn):
-        key = str(data["en"].get("term", "")).strip().lower()
-        if not key or key in seen:
+        keys = term_keys({lang: data[lang].get("term", "") for lang in LANGS})
+        if not keys or keys & seen:  # совпало название хотя бы на одном языке
             continue
-        seen.add(key)
+        seen |= keys
         entries.append(
             '<div class="entry"><span class="when">' + _tr(_date(day)) + "</span>"
             + _tr([escape(str(data[lang].get("term", ""))) for lang in LANGS], "strong", "term-name")
             + _tr([escape(str(data[lang].get("term_explained", ""))) for lang in LANGS], "span", "what")
             + "</div>"
         )
-    content = f'<h1>{_ui("nav_glossary")}</h1>{"".join(entries) or _ui("no_glossary", "p", "empty")}'
+    # Значок с подсказкой: откуда берутся термины. Показывается по наведению, фокусу и нажатию.
+    title = (
+        f'<div class="titled"><h1>{_ui("nav_glossary")}</h1>'
+        '<button type="button" class="info" aria-label="info" aria-describedby="glossary-tip">i</button>'
+        f'<span class="tip" id="glossary-tip" role="tooltip">{_ui("glossary_tip")}</span></div>'
+    )
+    content = f'{title}{"".join(entries) or _ui("no_glossary", "p", "empty")}'
     return _shell(UI["nav_glossary"][2], content + f'<footer>{_ui("disclaimer")}</footer>')
 
 
