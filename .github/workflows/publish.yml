@@ -12,20 +12,17 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Одна публикация за раз; начатую не прерываем.
 concurrency:
   group: pages
   cancel-in-progress: false
 
+# Сборка и публикация — отдельные задания: если публикация споткнётся, база с уже оплаченными
+# оценками сохранится в кэше, а публикацию можно перезапустить отдельно, не вызывая Claude заново.
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     env:
       TZ: Europe/Kyiv # время на странице и границы дня в архиве
     steps:
@@ -59,5 +56,15 @@ jobs:
         with:
           path: site
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
       - id: deploy
         uses: actions/deploy-pages@v5
