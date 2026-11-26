@@ -41,6 +41,8 @@ class Config:
     telegram_chat_id: str = ""
     # Когда страница пересобирается: время UTC вида "05:00". Пусто — отсчёта на странице нет.
     schedule: list[str] = field(default_factory=list)
+    # Контакт для запросов к SEC EDGAR (его требует SEC); пусто — отчёты компаний не запрашиваются.
+    sec_contact: str = ""
 
     @property
     def feeds(self) -> list[tuple[str, str]]:
@@ -59,4 +61,5 @@ def load_config() -> Config:
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         schedule=[t.strip() for t in os.getenv("FINNEWS_SCHEDULE", "").split(",") if t.strip()],
+        sec_contact=os.getenv("SEC_CONTACT", "").strip(),
     )

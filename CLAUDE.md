@@ -17,8 +17,8 @@ https://shimodos.github.io/finnews/. Исходно проект был дайд
 
 - Установка зависимостей: `uv sync` (без uv: `python -m venv .venv`, `pip install -e .`, pytest отдельно)
 - Тесты: `uv run pytest`
-- Всё для сайта: `uv run finnews update` — collect, prices, macro, score, events, movers, brief, weekly, site
-- Отдельные шаги: `collect`, `prices`, `macro`, `score`, `events`, `movers`, `brief`, `weekly`, `site`
+- Всё для сайта: `uv run finnews update` — collect, prices, macro, filings, score, events, movers, brief, weekly, site
+- Отдельные шаги: `collect`, `prices`, `macro`, `filings`, `score`, `events`, `movers`, `brief`, `weekly`, `site`
 - Только пересобрать страницы из базы, без сети и без трат: `uv run finnews site`
 - Telegram: `uv run finnews run --dry-run`, `digest`, `chat-id`
 
@@ -31,6 +31,8 @@ https://shimodos.github.io/finnews/. Исходно проект был дайд
 - `finnews/hours.py` — ближайшие торговые сессии бирж с праздниками и короткими днями
   (библиотека `exchange_calendars`, без сети); попадают в снимок котировок под ключом `hours`.
 - `finnews/earnings.py` — календарь отчётов (Nasdaq).
+- `finnews/edgar.py` — свежие отчёты компаний (10-K, 10-Q, 8-K) из SEC EDGAR; лежат в `store`
+  под ключом `filings`. Работает, только если задан `SEC_CONTACT`.
 - `finnews/macro.py` — макроданные из официальных источников (ФРБ Нью-Йорка, BLS, ЕЦБ, Eurostat);
   хранятся в таблице `store`, обновляются не чаще раза в 12 часов.
 - `finnews/llm.py` — вызовы Claude и тексты инструкций: оценка с переводом (Haiku), склейка
@@ -50,6 +52,8 @@ https://shimodos.github.io/finnews/. Исходно проект был дайд
 ## Правила
 
 - Ключи и токены лежат только в `.env` и в секретах репозитория; в git и в чат они не попадают.
+- Email для SEC EDGAR (`SEC_CONTACT`) — тоже только в `.env` и в секрете репозитория; вписывает
+  его пользователь сам. В код, тесты и git он не попадает: репозиторий публичный.
 - Инструмент объясняет новости и не даёт советов покупать или продавать конкретные бумаги.
 - Модели задаются через `FINNEWS_SCORE_MODEL` и `FINNEWS_DIGEST_MODEL`; идентификаторы моделей в коде не менять без просьбы.
 - Команды `update`, `score`, `events`, `movers`, `brief`, `weekly` тратят деньги на Claude API — не запускать их без надобности; для проверки вёрстки хватает `site`.

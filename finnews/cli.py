@@ -6,7 +6,7 @@ import sys
 
 from datetime import date, datetime, timedelta, timezone
 
-from . import db, earnings, hours, macro, market, site, telegram
+from . import db, earnings, edgar, hours, macro, market, site, telegram
 from .collect import collect
 from .config import load_config, yahoo_ticker_feed
 from .llm import build_brief, build_digest, build_weekly, explain_movers, group_events, score_articles
@@ -77,6 +77,17 @@ def cmd_prices(cfg, conn, args) -> dict:
     return data
 
 
+def cmd_filings(cfg, conn, args) -> None:
+    """Свежие отчёты компаний из SEC EDGAR."""
+    if not cfg.sec_contact:
+        print("SEC_CONTACT не задан — отчёты компаний из SEC пропускаю.")
+        return
+    items = edgar.recent(cfg)
+    db.put(conn, "filings", json.dumps({"items": items}, ensure_ascii=False))
+    conn.commit()
+    print(f"Отчётов из SEC: {len(items)}")
+
+
 def cmd_weekly(cfg, conn, args) -> None:
     """Обзор недели: пишется один раз, в выходные, когда торговая неделя закончилась."""
     today = date.today()
@@ -117,6 +128,7 @@ def cmd_update(cfg, conn, args) -> None:
         stats = collect(cfg, conn, feeds=[yahoo_ticker_feed(s) for s in leaders])
         print(f"Новости по лидерам дня ({', '.join(leaders)}): +{sum(n for n in stats.values() if n > 0)}")
     cmd_macro(cfg, conn, args)
+    cmd_filings(cfg, conn, args)
     if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
         cmd_score(cfg, conn, args)
         cmd_events(cfg, conn, args)
@@ -147,6 +159,7 @@ def main() -> None:
     p = sub.add_parser("macro", help="обновить макроданные: ставки, инфляция, безработица")
     p.add_argument("--force", action="store_true", help="обновить, даже если данные свежие")
     p.set_defaults(func=cmd_macro)
+    sub.add_parser("filings", help="получить свежие отчёты компаний из SEC EDGAR").set_defaults(func=cmd_filings)
     p = sub.add_parser("weekly", help="написать обзор текущей недели")
     p.add_argument("--force", action="store_true", help="написать сейчас, не дожидаясь выходных")
     p.set_defaults(func=cmd_weekly)

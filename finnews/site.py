@@ -95,6 +95,36 @@ MACRO = {
          "The same measure as in the US, for the countries that use the euro."),
     ),
 }
+# Формы отчётов SEC и пункты формы 8-K простыми словами (ru, uk, en).
+FILING_FORMS = {
+    "10-K": ("годовой отчёт", "річний звіт", "annual report"),
+    "10-Q": ("квартальный отчёт", "квартальний звіт", "quarterly report"),
+    "8-K": ("сообщение о важном событии", "повідомлення про важливу подію", "report of a major event"),
+}
+FILING_ITEMS = {
+    "1.01": ("заключён существенный договор", "укладено суттєвий договір", "entered a material agreement"),
+    "1.02": ("расторгнут существенный договор", "розірвано суттєвий договір", "ended a material agreement"),
+    "1.03": ("банкротство", "банкрутство", "bankruptcy"),
+    "1.05": ("инцидент кибербезопасности", "інцидент кібербезпеки", "cybersecurity incident"),
+    "2.01": ("завершена покупка или продажа активов", "завершено купівлю або продаж активів",
+             "completed an acquisition or sale of assets"),
+    "2.02": ("результаты квартала", "результати кварталу", "quarterly results"),
+    "2.03": ("новое долговое обязательство", "нове боргове зобов'язання", "new debt obligation"),
+    "2.05": ("расходы на сокращения или закрытие подразделений",
+             "витрати на скорочення або закриття підрозділів", "restructuring costs"),
+    "2.06": ("списание стоимости активов", "списання вартості активів", "asset write-down"),
+    "3.01": ("риск исключения из биржевого списка", "ризик виключення з біржового списку", "delisting notice"),
+    "4.01": ("смена аудитора", "зміна аудитора", "change of auditor"),
+    "4.02": ("прежней отчётности нельзя доверять", "попередній звітності не можна довіряти",
+             "earlier financial statements can no longer be relied on"),
+    "5.02": ("изменения в руководстве", "зміни в керівництві", "leadership changes"),
+    "5.03": ("изменения в уставе", "зміни у статуті", "bylaw changes"),
+    "5.07": ("итоги голосования акционеров", "підсумки голосування акціонерів", "shareholder vote results"),
+    "7.01": ("раскрытие информации для инвесторов", "розкриття інформації для інвесторів",
+             "disclosure to investors"),
+    "8.01": ("прочие важные события", "інші важливі події", "other events"),
+}
+FILING_DAYS = 7  # отчёты старше на странице не показываются
 TONES = {
     "positive": ("позитив", "позитив", "positive"),
     "negative": ("негатив", "негатив", "negative"),
@@ -151,6 +181,16 @@ UI = {
     "before": ("до открытия биржи", "до відкриття біржі", "before the open"),
     "after": ("после закрытия", "після закриття", "after the close"),
     "eps": ("прогноз прибыли на акцию", "прогноз прибутку на акцію", "EPS forecast"),
+    "filings": ("Свежие отчёты в SEC", "Свіжі звіти в SEC", "Recent SEC filings"),
+    "filings_note": (
+        "Публичные компании США обязаны сообщать регулятору — Комиссии по ценным бумагам (SEC) — "
+        "о результатах и важных событиях. Это первоисточник: то, что компания заявила сама.",
+        "Публічні компанії США зобов'язані повідомляти регулятору — Комісії з цінних паперів (SEC) — "
+        "про результати та важливі події. Це першоджерело: те, що компанія заявила сама.",
+        "US public companies must report their results and major events to the regulator, the "
+        "Securities and Exchange Commission (SEC). This is the primary source: the company's own words.",
+    ),
+    "document": ("документ →", "документ →", "document →"),
     "no_story": (
         "в ленте новостей об этом нет",
         "у стрічці новин про це немає",
@@ -868,6 +908,37 @@ def _earnings(data: dict) -> str:
     )
 
 
+def _filings(data: dict, today: date) -> str:
+    """Свежие отчёты компаний из SEC EDGAR: что за документ, о чём он, ссылка на оригинал."""
+    rows = []
+    for item in data.get("items") or []:
+        try:
+            day = date.fromisoformat(item["date"])
+            form, url = item["form"], str(item["url"])
+            if form not in FILING_FORMS or (today - day).days > FILING_DAYS:
+                continue
+            if not url.startswith("https://www.sec.gov/"):
+                continue
+            # У 8-K говорим, о чём сообщение; если пункты незнакомые — общее название формы.
+            known = [FILING_ITEMS[code] for code in item.get("items") or [] if code in FILING_ITEMS]
+            about = [", ".join(texts) for texts in zip(*known)] if known else FILING_FORMS[form]
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append(
+            f'<div class="mover"><span class="sym">{escape(str(item.get("symbol", "")))}</span>'
+            f'<span class="co">{escape(str(item.get("name", "")))}</span>'
+            f'<span class="pct">{escape(form)}</span>'
+            f'<p class="because">{escape(_period(item["date"]))} · {_tr([escape(t) for t in about])} '
+            f'<a href="{escape(url)}" target="_blank" rel="noopener noreferrer">{_ui("document")}</a></p></div>'
+        )
+    if not rows:
+        return ""
+    return (
+        f'<section class="market earnings filings"><h2>{_ui("filings")}</h2>'
+        f'{_ui("filings_note", "p", "lead")}{"".join(rows)}</section>'
+    )
+
+
 def _controls(rows, by_sector: bool, any_scored: bool, quotes: dict) -> str:
     navs = []
     if any_scored:
@@ -1193,6 +1264,7 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
 {_movers(market, rows, _loads(db.get(conn, "movers")[0]))}
 {_macro(macro)}
 {_earnings(market)}
+{_filings(_loads(db.get(conn, "filings")[0]), today)}
 {_feed(cfg, rows, today, quotes)}
 <footer>{_ui("disclaimer")}{quotes_note}</footer>"""
     return _shell(_date(today)[2], content)

@@ -64,6 +64,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           WATCHLIST: ${{ vars.WATCHLIST || 'VOO,VT,AAPL' }}
+          # Контакт для SEC EDGAR; без секрета блок отчётов компаний просто не появится.
+          SEC_CONTACT: ${{ secrets.SEC_CONTACT }}
           # То же расписание, что в cron выше (UTC): по нему страница считает время до обновления.
           FINNEWS_SCHEDULE: "05:00,12:00,16:00,21:30"
 

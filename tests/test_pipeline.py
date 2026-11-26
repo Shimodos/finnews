@@ -355,6 +355,53 @@ def test_earnings(tmp_path):
     assert "прогноз прибыли на акцию</span>" in block and ": $2.41" in block and ": −$0.32" in block
 
 
+def test_filings(tmp_path):
+    import json
+    from datetime import date
+
+    from finnews import edgar, site
+
+    def fake_sec(url):
+        if url == edgar.TICKERS_URL:
+            return {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+                    "1": {"cik_str": 1045810, "ticker": "NVDA", "title": "NVIDIA CORP"}}
+        if "0001045810" in url:
+            raise RuntimeError("нет ответа")  # отказ по одной компании не мешает остальным
+        assert url == "https://data.sec.gov/submissions/CIK0000320193.json"
+        rows = [  # форма, дата, пункты, документ
+            ("8-K", "2026-11-25", "2.02,9.01", "a.htm"), ("4", "2026-11-25", "", "x.xml"),
+            ("8-K", "2026-11-24", "9.01", "b.htm"), ("10-Q", "2026-11-24", "", "q.htm"),
+            ("8-K", "2026-11-23", "6.66", "c.htm"), ("10-K", "2026-11-01", "", "old.htm"),
+        ]
+        return {"name": "Apple <Inc>", "filings": {"recent": {
+            "form": [r[0] for r in rows], "filingDate": [r[1] for r in rows],
+            "items": [r[2] for r in rows], "primaryDocument": [r[3] for r in rows],
+            "accessionNumber": [f"0000320193-26-00000{i}" for i in range(len(rows))],
+            "acceptanceDateTime": [f"{r[1]}T21:30:00.000Z" for r in rows],
+        }}}
+
+    cfg = Config(db_path=str(tmp_path / "t.db"), watchlist=["VOO", "AAPL"])
+    assert edgar.recent(cfg) == []  # контакт не задан — к SEC не обращаемся
+    items = edgar.recent(cfg, today=date(2026, 11, 26), get=fake_sec)
+    # фонд без CIK пропущен; прочие формы, 8-K из одних приложений и старый отчёт отсеяны
+    assert [(i["form"], i["date"]) for i in items] == [
+        ("8-K", "2026-11-25"), ("10-Q", "2026-11-24"), ("8-K", "2026-11-23")]
+    assert items[0]["items"] == ["2.02", "9.01"]
+    assert items[0]["url"] == "https://www.sec.gov/Archives/edgar/data/320193/000032019326000000/a.htm"
+
+    conn = db.connect(cfg.db_path)
+    assert "market earnings filings" not in site.render(cfg, conn)
+    items.append({**items[0], "url": "https://example.com/x", "date": "2026-11-26"})  # чужой адрес
+    db.put(conn, "filings", json.dumps({"items": items}))
+    page = site._filings(json.loads(db.get(conn, "filings")[0]), date(2026, 11, 27))
+    assert page.count('class="mover"') == 3 and "example.com" not in page
+    assert "Apple &lt;Inc&gt;" in page and "25.11.2026" in page
+    assert "результаты квартала" in page and "quarterly results" in page  # пункт 2.02
+    assert "квартальный отчёт" in page  # 10-Q
+    assert "сообщение о важном событии" in page  # 8-K с незнакомым пунктом
+    assert site._filings(json.loads(db.get(conn, "filings")[0]), date(2026, 12, 20)) == ""  # устарели
+
+
 def test_hours(tmp_path):
     import json
     from datetime import datetime, timezone
