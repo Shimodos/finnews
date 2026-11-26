@@ -121,6 +121,11 @@ UI = {
     ),
     "pulse": ("Пульс рынка", "Пульс ринку", "Market pulse"),
     "movers": ("Кто двигался и почему", "Хто рухався і чому", "Who moved and why"),
+    "week_title": ("Обзор недели", "Огляд тижня", "Week in review"),
+    "week_change": ("Изменение за неделю", "Зміна за тиждень", "Change over the week"),
+    "week_main": ("Главное за неделю", "Головне за тиждень", "The week in brief"),
+    "week_ahead": ("На что смотреть дальше", "На що дивитися далі", "What to watch next"),
+    "week_takeaway": ("Что из этого вынести", "Що з цього винести", "The takeaway"),
     "macro": ("Экономика в цифрах", "Економіка в цифрах", "The economy in numbers"),
     "was": ("было", "було", "was"),
     "macro_note": (
@@ -296,6 +301,14 @@ nav .chg { margin-left: 5px; }
 .term { margin: 12px 0 0; padding: 14px 0 0; border-top: 1px solid var(--line); font-size: 15px; color: var(--muted); }
 .term b { display: block; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
 .term strong { color: var(--text); font-weight: 500; }
+.brief h3.sub {
+  margin: 28px 0 0; color: var(--muted); font: 500 12px var(--mono);
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.brief h3.sub + ul { margin-top: 10px; }
+.weeklink { margin: 16px 0 0; font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
+.weeklink a { color: var(--accent); text-decoration: none; }
+.weeklink a:hover { text-decoration: underline; text-underline-offset: 4px; }
 .controls { display: grid; gap: 10px; margin: 44px 0 0; }
 .day h2 { position: sticky; top: 0; z-index: 1; margin-top: 40px; background: var(--bg); }
 article {
@@ -942,6 +955,75 @@ def _brief_days(conn) -> list:
     return result
 
 
+def _weeks(conn) -> list:
+    """(понедельник, обзор недели) по всем неделям с обзором; свежие первыми."""
+    result = []
+    for row in db.with_prefix(conn, "week:"):
+        try:
+            monday = date.fromisoformat(row["key"][5:])
+        except ValueError:
+            continue
+        data = _loads(row["data"])
+        text = data.get("text")
+        if isinstance(text, dict) and all(isinstance(text.get(lang), dict) for lang in LANGS):
+            result.append((monday, data))
+    return result
+
+
+def _week_label(monday) -> list[str]:
+    """Торговая неделя с понедельника по пятницу: «23–27 ноября» на трёх языках."""
+    friday = monday + timedelta(days=4)
+    if monday.month == friday.month:
+        return [
+            f"{monday.day}–{friday.day} {MONTHS['ru'][monday.month - 1]}",
+            f"{monday.day}–{friday.day} {MONTHS['uk'][monday.month - 1]}",
+            f"{MONTHS['en'][monday.month - 1]} {monday.day}–{friday.day}",
+        ]
+    return [f"{a} – {b}" for a, b in zip(_date(monday), _date(friday))]
+
+
+def render_week(monday, data: dict) -> str:
+    """Страница обзора недели: изменения индексов, главные сюжеты, что дальше, вывод."""
+    changes = data.get("changes") or {}
+    cards = ""
+    for symbol, item in changes.items():
+        if not isinstance(item, dict) or not isinstance(item.get("change"), (int, float)):
+            continue
+        change = item["change"]
+        cls = "up" if change > 0 else "down" if change < 0 else ""
+        cards += (
+            f'<div class="quote"><span class="name">{escape(str(item.get("name", symbol)))}</span>'
+            f'<span class="price {cls}">{f"{change:+.2f}%".replace("-", "−")}</span></div>'
+        )
+    strip = (
+        f'<section class="market"><h2>{_ui("week_change")}</h2>'
+        f'<div class="quotes" tabindex="0">{cards}</div></section>'
+        if cards
+        else ""
+    )
+    blocks = []
+    for lang in LANGS:
+        text = data["text"][lang]
+        i = LANGS.index(lang)
+
+        def items(key: str) -> str:
+            return "".join(f"<li>{escape(str(p))}</li>" for p in text.get(key) or [])
+
+        ahead = f'<h3 class="sub">{escape(UI["week_ahead"][i])}</h3><ul>{items("ahead")}</ul>' if text.get("ahead") else ""
+        blocks.append(
+            f'<div data-l="{lang}"><p class="overview">{escape(str(text.get("overview", "")))}</p>'
+            f'<ul>{items("themes")}</ul>{ahead}'
+            f'<p class="term"><b>{escape(UI["week_takeaway"][i])}</b>{escape(str(text.get("takeaway", "")))}</p></div>'
+        )
+    label = _week_label(monday)
+    content = (
+        f'<h1>{_tr(label)}{_ui("week_title", "span", "weekday")}</h1>{strip}'
+        f'<section class="brief"><h2>{_ui("week_main")}</h2>{"".join(blocks)}</section>'
+        f'<footer>{_ui("disclaimer")}</footer>'
+    )
+    return _shell(f"{UI['week_title'][2]}: {label[2]}", content)
+
+
 def render_day(cfg: Config, conn, day, brief: dict) -> str:
     """Страница архива: обзор и новости одного дня (по местному времени)."""
     start = datetime.combine(day, time.min).astimezone()
@@ -967,6 +1049,15 @@ def render_archive(conn) -> str:
         + "</a>"
         for day, data in _brief_days(conn)
     )
+    weeks = "".join(
+        f'<a class="entry" href="week-{monday.isoformat()}.html"><span class="when">'
+        + _tr([f"{escape(t)}: {escape(label)}" for t, label in zip(UI["week_title"], _week_label(monday))])
+        + "</span>"
+        + _tr([escape(str(data["text"][lang].get("overview", ""))) for lang in LANGS], "span", "what")
+        + "</a>"
+        for monday, data in _weeks(conn)
+    )
+    entries = weeks + entries
     content = (
         f'<h1>{_ui("nav_archive")}</h1>'
         f'<label class="search">{_ui("search")}<input id="q" type="search" autocomplete="off"></label>'
@@ -1040,11 +1131,18 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
     # Отсчёт до следующей сборки: расписание (UTC) задаётся там же, где она запускается.
     slots = [t for t in cfg.schedule if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t)]
     countdown = f'<span id="next" data-schedule="{",".join(slots)}"></span>' if slots else ""
+    # Ссылка на свежий обзор недели — пока ему не больше девяти дней.
+    weeks = _weeks(conn)
+    week_link = ""
+    if weeks and (today - weeks[0][0]).days <= 9:
+        labels = [f"{escape(t)}: {escape(label)} →" for t, label in zip(UI["week_title"], _week_label(weeks[0][0]))]
+        week_link = f'<p class="weeklink"><a href="week-{weeks[0][0].isoformat()}.html">{_tr(labels)}</a></p>'
     content = f"""{_heading(today)}
 <p class="stat">{stat}{countdown}</p>
 {note}
 {_pulse(market)}
 {_brief(_loads(db.latest_brief(conn, hours=hours)))}
+{week_link}
 {_movers(market, rows)}
 {_macro(macro)}
 {_earnings(market)}
@@ -1066,4 +1164,6 @@ def build(cfg: Config, conn, *, hours: int = 24, out_dir: str = "site") -> Path:
     (out / "glossary.html").write_text(render_glossary(conn), encoding="utf-8")
     for day, brief in _brief_days(conn):
         (out / f"day-{day.isoformat()}.html").write_text(render_day(cfg, conn, day, brief), encoding="utf-8")
+    for monday, data in _weeks(conn):
+        (out / f"week-{monday.isoformat()}.html").write_text(render_week(monday, data), encoding="utf-8")
     return path

@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 
 import anthropic
@@ -72,6 +72,31 @@ BRIEF_SYSTEM = """Ты объясняешь начинающему инвест�
 Правила: простой язык; не давай советов покупать или продавать конкретные бумаги; \
 названия компаний и тикеры не переводи; это чистовой текст — без оговорок, самоисправлений \
 и пометок для себя."""
+
+WEEKLY_SYSTEM = """Ты пишешь обзор недели на мировых рынках для начинающего инвестора. \
+Он покупает акции и ETF на долгий срок и хочет понять, чем эта неделя запомнится и что из неё \
+вынести, а не получать торговые сигналы.
+
+Тебе дают: изменение индексов за неделю (точные данные бирж), обзоры каждого дня этой недели, \
+самые важные новости недели, показатели экономики и календарь отчётов на ближайшие дни. \
+Используй только эти сведения, не придумывай цифры и события. Куда и насколько двигался рынок \
+за неделю, бери только из недельных изменений индексов. Какие-то дни недели могут отсутствовать — \
+тогда пиши по тому, что есть, и не делай вид, что знаешь остальное.
+
+Верни один и тот же обзор на трёх языках — ru (русский), uk (украинский), en (английский):
+- overview — 3-4 предложения: чем закончилась неделя и что было её главной темой.
+- themes — от 3 до 5 пунктов: главные сюжеты недели, каждый — что произошло и почему это \
+важно для обычного инвестора. Объединяй события одного сюжета за разные дни.
+- ahead — от 2 до 4 пунктов: на что смотреть на следующей неделе (отчёты из календаря, \
+ожидаемые решения и данные, о которых говорилось в новостях). Если опереться не на что, \
+дай меньше пунктов.
+- takeaway — 1-2 предложения: какой общий урок о том, как устроен рынок, показывает эта неделя.
+
+Правила: простой язык; не давай советов покупать или продавать конкретные бумаги; \
+названия компаний и тикеры не переводи; это чистовой текст — без оговорок, самоисправлений \
+и пометок для себя."""
+
+WEEKLY_NEWS_LIMIT = 40
 
 EVENTS_SYSTEM = """Тебе дают пронумерованный список заголовков финансовых новостей за сутки. \
 Найди новости об одном и том же событии: одно заявление, один отчёт, одно решение, одна сделка, \
@@ -147,6 +172,19 @@ class Brief(BaseModel):
     ru: BriefText
     uk: BriefText
     en: BriefText
+
+
+class WeekText(BaseModel):
+    overview: str
+    themes: list[str]
+    ahead: list[str]
+    takeaway: str
+
+
+class Week(BaseModel):
+    ru: WeekText
+    uk: WeekText
+    en: WeekText
 
 
 class EventGroup(BaseModel):
@@ -289,6 +327,81 @@ def build_brief(
     if response.stop_reason != "end_turn" or response.parsed_output is None:
         raise RuntimeError(f"Обзор дня не сгенерирован: stop_reason={response.stop_reason}")
     db.save_brief(conn, now.date().isoformat(), response.parsed_output.model_dump_json())
+    conn.commit()
+    return True
+
+
+def build_weekly(
+    cfg: Config, conn, monday: date, *, changes: dict | None = None,
+    client: anthropic.Anthropic | None = None,
+) -> bool:
+    """Пишет обзор недели, начавшейся в понедельник monday, и сохраняет его в базу.
+
+    changes — недельные изменения индексов из market.week_changes. False — писать не о чем.
+    """
+    start = datetime.combine(monday, time.min).astimezone()
+    rows = db.between(
+        conn,
+        start.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        (start + timedelta(days=7)).astimezone(timezone.utc).isoformat(timespec="seconds"),
+    )
+    rows = sorted(
+        (r for r in rows if (r["score"] or 0) >= cfg.min_score), key=lambda r: -r["score"]
+    )[:WEEKLY_NEWS_LIMIT]
+    week = {(monday + timedelta(days=i)).isoformat() for i in range(7)}
+    days = []
+    for brief in reversed(db.all_briefs(conn)):
+        if brief["day"] not in week:
+            continue
+        try:
+            text = json.loads(brief["data"])["ru"]
+            days.append(f"{brief['day']}: {text['overview']}\n" + "\n".join(f"- {p}" for p in text["points"]))
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+    if not rows and not days:
+        return False
+
+    parts = [f"Неделя с {monday:%d.%m.%Y} по {monday + timedelta(days=6):%d.%m.%Y}"]
+    if changes:
+        parts.append("Изменение за неделю:\n" + "\n".join(
+            f"{item['name']}: {item['change']:+.2f}%" for item in changes.values()
+        ))
+    if days:
+        parts.append("Обзоры по дням:\n\n" + "\n\n".join(days))
+    if rows:
+        parts.append("Важные новости недели:\n\n" + "\n\n".join(
+            f"[{r['score']}/10] {r['published'][:10]} {r['title']}\nисточник: {r['source']}\n"
+            f"описание: {r['summary'][:300]}"
+            for r in rows
+        ))
+    try:
+        economy = macro.summary(json.loads(db.get(conn, "macro")[0] or "{}"))
+        snapshot = json.loads(db.latest_market(conn, hours=24 * 7) or "{}")
+    except (json.JSONDecodeError, KeyError, TypeError):
+        economy, snapshot = "", {}
+    if economy:
+        parts.append(f"Экономика (официальная статистика):\n{economy}")
+    reports = [
+        f"{day['date']}: " + ", ".join(f"{i['name']} ({i['symbol']})" for i in day["items"])
+        for day in snapshot.get("earnings") or []
+        if day["date"] > (monday + timedelta(days=4)).isoformat()
+    ]
+    if reports:
+        parts.append("Календарь отчётов на ближайшие дни:\n" + "\n".join(reports))
+
+    client = client or anthropic.Anthropic()
+    response = client.messages.parse(
+        model=cfg.digest_model,
+        max_tokens=16000,
+        output_config={"effort": "medium"},
+        system=WEEKLY_SYSTEM,
+        messages=[{"role": "user", "content": "\n\n".join(parts)}],
+        output_format=Week,
+    )
+    if response.stop_reason != "end_turn" or response.parsed_output is None:
+        raise RuntimeError(f"Обзор недели не сгенерирован: stop_reason={response.stop_reason}")
+    data = {"changes": changes or {}, "text": response.parsed_output.model_dump()}
+    db.put(conn, f"week:{monday.isoformat()}", json.dumps(data, ensure_ascii=False))
     conn.commit()
     return True
 

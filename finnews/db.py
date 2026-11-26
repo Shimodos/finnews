@@ -165,6 +165,13 @@ def get(conn, key: str) -> tuple[str, str]:
     return (row["data"], row["created_at"]) if row else ("", "")
 
 
+def with_prefix(conn, prefix: str) -> list[sqlite3.Row]:
+    """Записи хранилища, чей ключ начинается с prefix; свежие (по ключу) первыми."""
+    return conn.execute(
+        "SELECT key, data FROM store WHERE key LIKE ? ORDER BY key DESC", (prefix + "%",)
+    ).fetchall()
+
+
 def save_market(conn, data: str) -> None:
     """Хранится только последний снимок котировок."""
     conn.execute(

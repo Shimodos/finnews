@@ -135,10 +135,40 @@ def summary(data: dict) -> str:
     return "\n".join(lines)
 
 
-def _http_get(symbol: str) -> dict:
+def week_changes(symbols: list[str], monday, get=None) -> dict:
+    """Изменение за торговую неделю, начавшуюся в понедельник monday, в процентах.
+
+    Сравнивается последнее закрытие недели с последним закрытием до неё. Даты считаются
+    по часам биржи. get(symbol) -> JSON с дневными свечами; по умолчанию запрос к Yahoo за месяц.
+    """
+    get = get or (lambda symbol: _http_get(symbol, period="1mo", interval="1d"))
+    result = {}
+    for symbol in symbols:
+        try:
+            chart = get(symbol)["chart"]["result"][0]
+            offset = int((chart.get("meta") or {}).get("gmtoffset") or 0)
+            closes = chart["indicators"]["quote"][0]["close"]
+            days = [
+                (datetime.fromtimestamp(ts + offset, timezone.utc).date(), close)
+                for ts, close in zip(chart["timestamp"], closes)
+                if close is not None
+            ]
+            before = [close for day, close in days if day < monday]
+            during = [close for day, close in days if day >= monday]
+            if before and during:
+                result[symbol] = {
+                    "name": INDEXES.get(symbol, symbol),
+                    "change": round((during[-1] - before[-1]) / before[-1] * 100, 2),
+                }
+        except Exception as error:  # noqa: BLE001 - источник неофициальный, отказ не критичен
+            log.warning("Недельное изменение %s недоступно: %s", symbol, error)
+    return result
+
+
+def _http_get(symbol: str, period: str = "1d", interval: str = "15m") -> dict:
     response = httpx.get(
         URL.format(symbol=quote(symbol)),
-        params={"range": "1d", "interval": "15m"},
+        params={"range": period, "interval": interval},
         headers=HEADERS,
         timeout=20,
     )

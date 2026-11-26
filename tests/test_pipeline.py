@@ -5,8 +5,8 @@ from finnews import db
 from finnews.collect import clean, is_duplicate, title_key
 from finnews.config import Config
 from finnews.llm import (
-    Brief, BriefText, EventGroup, EventGroups, Score, ScoreBatch,
-    build_brief, build_digest, group_events, score_articles,
+    Brief, BriefText, EventGroup, EventGroups, Score, ScoreBatch, Week, WeekText,
+    build_brief, build_digest, build_weekly, group_events, score_articles,
 )
 from finnews.telegram import split_message
 
@@ -44,6 +44,11 @@ class FakeClient:
             apple = [i for i, block in enumerate(blocks) if "Apple" in block]
             groups = [EventGroup(indexes=[*apple, 99]), EventGroup(indexes=[len(blocks) - 1])]
             return SimpleNamespace(stop_reason="end_turn", parsed_output=EventGroups(groups=groups))
+        if kw["output_format"] is Week:
+            self.week_prompt = kw["messages"][0]["content"]
+            text = WeekText(overview="Итог <недели>", themes=["Сюжет"], ahead=["Отчёт CRM"], takeaway="Вывод")
+            week = Week(ru=text, uk=text.model_copy(update={"overview": "Підсумок тижня"}), en=text)
+            return SimpleNamespace(stop_reason="end_turn", parsed_output=week)
         if kw["output_format"] is Brief:
             self.brief_prompt = kw["messages"][0]["content"]
             text = BriefText(overview="Обзор <дня>", points=["Пункт"], term="ETF", term_explained="Фонд")
@@ -195,6 +200,53 @@ def test_events(tmp_path):
 
     db.set_events(conn, [], hours=24)  # разметка стирается при следующем пересчёте
     assert site.render(cfg, conn).count("<article") == 3
+
+
+def test_weekly(tmp_path):
+    from datetime import date, datetime, timedelta, timezone
+
+    from finnews import market, site
+
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+
+    def day_ts(day):
+        return int(datetime(day.year, day.month, day.day, 15, tzinfo=timezone.utc).timestamp())
+
+    def fake_month(symbol):
+        if symbol == "BAD":
+            raise RuntimeError("нет ответа")
+        days = [monday - timedelta(days=4), monday - timedelta(days=3), monday, monday + timedelta(days=1)]
+        return {"chart": {"result": [{
+            "meta": {"gmtoffset": 0},
+            "timestamp": [day_ts(d) for d in days],
+            "indicators": {"quote": [{"close": [90.0, 100.0, None, 103.0]}]},
+        }]}}
+
+    changes = market.week_changes(["^GSPC", "BAD"], monday, get=fake_month)
+    assert changes == {"^GSPC": {"name": "S&P 500", "change": 3.0}}  # 103 против 100 до начала недели
+
+    cfg = Config(db_path=str(tmp_path / "t.db"))
+    conn = db.connect(cfg.db_path)
+    client = FakeClient()
+    assert not build_weekly(cfg, conn, monday, changes=changes, client=client)  # писать не о чем
+    db.insert_article(
+        conn, url="https://example.com/a", title="Apple beats earnings", title_key="apple beats earnings",
+        summary="", source="Test", published=db.now_iso(),
+    )
+    score_articles(cfg, conn, client=client)
+    build_brief(cfg, conn, client=client)
+    assert build_weekly(cfg, conn, monday, changes=changes, client=client)
+    assert "S&P 500: +3.00%" in client.week_prompt and "Apple beats earnings" in client.week_prompt
+    assert "Обзор <дня>" in client.week_prompt  # обзоры дней этой недели идут в запрос
+
+    out = tmp_path / "site"
+    site.build(cfg, conn, out_dir=str(out))
+    page = (out / f"week-{monday.isoformat()}.html").read_text(encoding="utf-8")
+    assert "Итог &lt;недели&gt;" in page and "Підсумок тижня" in page
+    assert "+3.00%" in page and "Отчёт CRM" in page and "Вывод" in page
+    assert f'href="week-{monday.isoformat()}.html"' in (out / "archive.html").read_text(encoding="utf-8")
+    assert f'href="week-{monday.isoformat()}.html"' in (out / "index.html").read_text(encoding="utf-8")
 
 
 def test_macro(tmp_path):

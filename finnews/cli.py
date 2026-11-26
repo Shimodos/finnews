@@ -4,12 +4,12 @@ import logging
 import os
 import sys
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from . import db, earnings, macro, market, site, telegram
 from .collect import collect
 from .config import load_config, yahoo_ticker_feed
-from .llm import build_brief, build_digest, group_events, score_articles
+from .llm import build_brief, build_digest, build_weekly, group_events, score_articles
 
 
 def cmd_collect(cfg, conn, args) -> None:
@@ -72,6 +72,22 @@ def cmd_prices(cfg, conn, args) -> dict:
     return data
 
 
+def cmd_weekly(cfg, conn, args) -> None:
+    """Обзор недели: пишется один раз, в выходные, когда торговая неделя закончилась."""
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    force = getattr(args, "force", False)
+    if not force and today.weekday() < 5:
+        print("Обзор недели пишется в выходные — пропускаю.")
+        return
+    if not force and db.get(conn, f"week:{monday.isoformat()}")[0]:
+        print("Обзор этой недели уже есть — пропускаю.")
+        return
+    changes = market.week_changes([*market.INDEXES, *cfg.watchlist], monday)
+    done = build_weekly(cfg, conn, monday, changes=changes)
+    print("Обзор недели готов." if done else "Нет материала для обзора недели.")
+
+
 MACRO_MAX_AGE_HOURS = 12  # макроданные меняются редко; чаще не запрашиваем, чтобы беречь лимиты
 
 
@@ -100,6 +116,7 @@ def cmd_update(cfg, conn, args) -> None:
         cmd_score(cfg, conn, args)
         cmd_events(cfg, conn, args)
         cmd_brief(cfg, conn, args)
+        cmd_weekly(cfg, conn, args)
     else:
         print("ANTHROPIC_API_KEY не задан — пропускаю оценку, перевод и обзор дня.")
     cmd_site(cfg, conn, args)
@@ -124,6 +141,9 @@ def main() -> None:
     p = sub.add_parser("macro", help="обновить макроданные: ставки, инфляция, безработица")
     p.add_argument("--force", action="store_true", help="обновить, даже если данные свежие")
     p.set_defaults(func=cmd_macro)
+    p = sub.add_parser("weekly", help="написать обзор текущей недели")
+    p.add_argument("--force", action="store_true", help="написать сейчас, не дожидаясь выходных")
+    p.set_defaults(func=cmd_weekly)
     for name, func, help_ in (
         ("digest", cmd_digest, "собрать и отправить дайджест"),
         ("run", cmd_run, "всё сразу: collect + score + digest"),
