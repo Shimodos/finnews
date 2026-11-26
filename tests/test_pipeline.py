@@ -51,6 +51,7 @@ class FakeClient:
         items = [
             Score(
                 index=i, score=8 if "Apple" in block else 2, tickers=["aapl"], sector="tech",
+                region="asia" if "Nikkei" in block else "us",
                 tone="positive", title_ru="Заголовок по-русски", title_uk="Заголовок українською",
                 summary_ru="", summary_uk="", why_ru="Почему важно", why_uk="Чому важливо",
                 why_en="Why it matters",
@@ -199,6 +200,7 @@ def fake_yahoo(symbol):
             "symbol": symbol, "shortName": f"{symbol} <Inc>", "instrumentType": kind,
             "regularMarketPrice": price, "chartPreviousClose": 100.0, "regularMarketTime": 1795640400,
             "currentTradingPeriod": {"regular": {"start": 1795617000, "end": 1795640400}},
+            "exchangeTimezoneName": "Asia/Tokyo" if symbol == "^N225" else "America/New_York",
         },
         "indicators": {"quote": [{"close": [100.0, None, 100.5, price]}]},
     }]}}
@@ -211,8 +213,9 @@ def test_market(tmp_path):
 
     cfg = Config(db_path=str(tmp_path / "t.db"), watchlist=["AAPL"], schedule=["05:00", "21:30", "bad"])
     data = market.snapshot(cfg, get=fake_yahoo)
-    assert data["session"] == {"start": 1795617000, "end": 1795640400}
-    assert data["pulse"] == ["^GSPC", "^IXIC", "^DJI", "AAPL"]
+    assert set(data["sessions"]) == {"^GSPC", "^FTSE", "^GDAXI", "^N225", "^HSI"}  # биржи с часами
+    assert data["sessions"]["^N225"] == {"start": 1795617000, "end": 1795640400, "tz": "Asia/Tokyo"}
+    assert data["pulse"] == ["^GSPC", "^IXIC", "^DJI", "^FTSE", "^GDAXI", "^N225", "^HSI", "AAPL"]
     assert "MSFT" not in data["quotes"]  # отказ по одному символу не мешает остальным
     assert data["quotes"]["^GSPC"]["name"] == "S&P 500"
     assert data["quotes"]["AAPL"]["change"] == 10.0
@@ -220,13 +223,13 @@ def test_market(tmp_path):
     assert "points" not in data["quotes"]["NVDA"]  # график нужен только в «пульсе»
 
     conn = db.connect(cfg.db_path)
-    for i, title in enumerate(["Apple beats earnings", "Fed holds rates"]):
+    for i, title in enumerate(["Apple beats earnings", "Fed holds rates", "Nikkei hits record"]):
         db.insert_article(
             conn, url=f"https://example.com/{i}", title=title, title_key=title_key(title),
             summary="", source="Test", published=db.now_iso(),
         )
-    assert score_articles(cfg, conn, client=FakeClient()) == 2
-    fed = conn.execute("SELECT id FROM articles WHERE title = 'Fed holds rates'").fetchone()["id"]
+    assert score_articles(cfg, conn, client=FakeClient()) == 3
+    fed =conn.execute("SELECT id FROM articles WHERE title = 'Fed holds rates'").fetchone()["id"]
     db.save_score(conn, fed, 9, [], "", sector="macro")
     db.save_market(conn, json.dumps(data))
 
@@ -234,14 +237,20 @@ def test_market(tmp_path):
     client = FakeClient()
     assert build_brief(cfg, conn, client=client)
     assert "S&P 500: 101.00, за день +1.00%" in client.brief_prompt
+    assert "Nikkei 225: 100.00" in client.brief_prompt  # биржи Европы и Азии тоже
     assert "tech (XLK) -1.00%" in client.brief_prompt and "NVDA -5.00%" in client.brief_prompt
 
     page = site.render(cfg, conn)
-    assert 'id="hours" data-start="1795617000" data-end="1795640400"' in page  # часы торгов
+    # часы пяти бирж: пояс и границы сессии, остальное дописывает скрипт
+    assert page.count('class="exch"') == 5
+    assert 'data-tz="Asia/Tokyo" data-start="1795617000" data-end="1795640400"' in page
     assert 'id="next" data-schedule="05:00,21:30"' in page  # отсчёт; мусор из расписания отброшен
+    # регион: метка у новости и фильтр
+    assert 'data-region="asia"' in page and 'data-region="us"' in page
+    assert '<nav aria-label="region">' in page
 
     pulse = page.split('class="market pulse"')[1].split("</section>")[0]
-    assert pulse.count('class="quote"') == 4 and "<polyline" in pulse
+    assert pulse.count('class="quote"') == 8 and "<polyline" in pulse
     assert "+1.00%" in pulse and "110.00" in pulse
     movers = page.split('class="market movers"')[1].split("</section>")[0]
     assert movers.count('class="mover"') == 2  # один вырос, один упал; остальные без изменений

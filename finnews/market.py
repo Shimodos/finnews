@@ -20,7 +20,25 @@ log = logging.getLogger(__name__)
 URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 HEADERS = {"User-Agent": "Mozilla/5.0"}  # без него Yahoo отвечает отказом
 
-INDEXES = {"^GSPC": "S&P 500", "^IXIC": "Nasdaq", "^DJI": "Dow Jones"}
+INDEXES = {
+    "^GSPC": "S&P 500",
+    "^IXIC": "Nasdaq",
+    "^DJI": "Dow Jones",
+    "^FTSE": "FTSE 100",
+    "^GDAXI": "DAX",
+    "^N225": "Nikkei 225",
+    "^HSI": "Hang Seng",
+}
+
+# Биржи, чьи часы работы показываются на странице: индекс, по которому Yahoo отдаёт
+# время сессии, и название города (ru, uk, en).
+EXCHANGES = (
+    ("^GSPC", ("Нью-Йорк", "Нью-Йорк", "New York")),
+    ("^FTSE", ("Лондон", "Лондон", "London")),
+    ("^GDAXI", ("Франкфурт", "Франкфурт", "Frankfurt")),
+    ("^N225", ("Токио", "Токіо", "Tokyo")),
+    ("^HSI", ("Гонконг", "Гонконг", "Hong Kong")),
+)
 
 # По какому фонду считается изменение сферы за день (отраслевые фонды SPDR).
 SECTOR_SYMBOLS = {
@@ -63,10 +81,15 @@ def parse(result: dict, *, with_points: bool) -> dict | None:
             timespec="seconds"
         ),
     }
-    # Обычная торговая сессия, к которой относится цена: начало и конец в секундах Unix.
+    # Обычная торговая сессия биржи (текущая или ближайшая): начало и конец в секундах Unix
+    # и часовой пояс биржи — по ним страница считает, открыта ли биржа и когда откроется.
     regular = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
-    if regular.get("start") and regular.get("end"):
-        item["session"] = {"start": int(regular["start"]), "end": int(regular["end"])}
+    if regular.get("start") and regular.get("end") and meta.get("exchangeTimezoneName"):
+        item["session"] = {
+            "start": int(regular["start"]),
+            "end": int(regular["end"]),
+            "tz": str(meta["exchangeTimezoneName"]),
+        }
     if with_points:
         quotes = ((result.get("indicators") or {}).get("quote") or [{}])[0]
         closes = [c for c in quotes.get("close") or [] if c is not None]
@@ -92,12 +115,10 @@ def summary(data: dict) -> str:
     quotes = data.get("quotes") or {}
     if not quotes:
         return ""
-    first = next((quotes[s] for s in INDEXES if s in quotes), None)
-    lines = []
-    if first:
-        lines.append(f"Последняя торговая сессия: {first['time'][:10]} (время UTC {first['time'][11:16]}).")
-    lines += [
+    # У каждой биржи своя последняя сессия, поэтому дата стоит у каждой строки.
+    lines = [
         f"{quotes[s]['name']}: {quotes[s]['price']:,.2f}, за день {_signed(quotes[s]['change'])}"
+        f" (данные на {quotes[s]['time'][:10]} {quotes[s]['time'][11:16]} UTC)"
         for s in data.get("pulse") or []
         if s in quotes
     ]
@@ -107,10 +128,10 @@ def summary(data: dict) -> str:
         if symbol in quotes and sector != "markets"
     ]
     if sectors:
-        lines.append("Сферы по отраслевым фондам: " + "; ".join(sectors))
+        lines.append("Сферы по отраслевым фондам США: " + "; ".join(sectors))
     leaders = [f"{s} {_signed(quotes[s]['change'])}" for s in movers(data)]
     if leaders:
-        lines.append("Сильнее всего изменились среди крупных компаний: " + "; ".join(leaders))
+        lines.append("Сильнее всего изменились среди крупных компаний США: " + "; ".join(leaders))
     return "\n".join(lines)
 
 
@@ -145,10 +166,10 @@ def snapshot(cfg: Config, *, get=None) -> dict:
     for symbol, name in INDEXES.items():
         if symbol in quotes:
             quotes[symbol]["name"] = name
-    session = next((quotes[s]["session"] for s in INDEXES if "session" in quotes.get(s, {})), None)
+    sessions = {s: quotes[s]["session"] for s, _ in EXCHANGES if "session" in quotes.get(s, {})}
     return {
         "asof": db.now_iso(),
         "pulse": [s for s in pulse if s in quotes],
-        "session": session,
+        "sessions": sessions,
         "quotes": quotes,
     }

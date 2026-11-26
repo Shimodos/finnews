@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS articles (
     sector      TEXT NOT NULL DEFAULT '',
     tone        TEXT NOT NULL DEFAULT '',
     i18n        TEXT NOT NULL DEFAULT '',
-    event       INTEGER
+    event       INTEGER,
+    region      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published);
 CREATE TABLE IF NOT EXISTS briefs (
@@ -39,6 +40,7 @@ MIGRATIONS = {
     "tone": "ALTER TABLE articles ADD COLUMN tone TEXT NOT NULL DEFAULT ''",
     "i18n": "ALTER TABLE articles ADD COLUMN i18n TEXT NOT NULL DEFAULT ''",
     "event": "ALTER TABLE articles ADD COLUMN event INTEGER",
+    "region": "ALTER TABLE articles ADD COLUMN region TEXT NOT NULL DEFAULT ''",
 }
 
 
@@ -81,12 +83,12 @@ def unscored(conn, limit: int = 200) -> list[sqlite3.Row]:
 
 def save_score(
     conn, article_id: int, score: int, tickers: list[str], reason: str,
-    *, sector: str = "", tone: str = "", i18n: str = "",
+    *, sector: str = "", tone: str = "", i18n: str = "", region: str = "",
 ) -> None:
     conn.execute(
-        "UPDATE articles SET score = ?, tickers = ?, reason = ?, sector = ?, tone = ?, i18n = ?"
-        " WHERE id = ?",
-        (score, ",".join(tickers), reason, sector, tone, i18n, article_id),
+        "UPDATE articles SET score = ?, tickers = ?, reason = ?, sector = ?, tone = ?, i18n = ?,"
+        " region = ? WHERE id = ?",
+        (score, ",".join(tickers), reason, sector, tone, i18n, region, article_id),
     )
 
 

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import db
 from .config import Config
-from .market import SECTOR_SYMBOLS
+from .market import EXCHANGES, SECTOR_SYMBOLS
 from .market import movers as top_movers
 
 LANGS = ("ru", "uk", "en")
@@ -33,7 +33,7 @@ WEEKDAYS = {
     "en": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
 }
 SECTORS = {
-    "macro": ("Экономика и ФРС", "Економіка і ФРС", "Economy & Fed"),
+    "macro": ("Экономика и центробанки", "Економіка і центробанки", "Economy & central banks"),
     "markets": ("Рынок в целом", "Ринок загалом", "Broad market"),
     "tech": ("Технологии", "Технології", "Technology"),
     "finance": ("Банки и финансы", "Банки і фінанси", "Banks & finance"),
@@ -44,12 +44,19 @@ SECTORS = {
     "crypto": ("Криптовалюты", "Криптовалюти", "Crypto"),
     "other": ("Другое", "Інше", "Other"),
 }
+REGIONS = {
+    "us": ("США", "США", "US"),
+    "europe": ("Европа", "Європа", "Europe"),
+    "asia": ("Азия", "Азія", "Asia"),
+    "world": ("Мир", "Світ", "World"),
+}
 TONES = {
     "positive": ("позитив", "позитив", "positive"),
     "negative": ("негатив", "негатив", "negative"),
 }
 UI = {
     "all": ("Все", "Усі", "All"),
+    "all_regions": ("Весь мир", "Увесь світ", "All regions"),
     "today": ("Сегодня", "Сьогодні", "Today"),
     "yesterday": ("Вчера", "Вчора", "Yesterday"),
     "sort_time": ("Свежие", "Свіжі", "Latest"),
@@ -162,8 +169,14 @@ h1 .weekday { display: block; color: var(--muted); font-weight: 400; }
 }
 .market { margin: 48px 0 0; }
 .market h2 .asof { color: var(--muted); font-weight: 400; }
-.hours { margin: 12px 0 0; color: var(--muted); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
-.hours:empty { display: none; }
+.hours {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 4px 28px;
+  margin: 14px 0 4px; color: var(--muted); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em;
+}
+.exch { display: grid; grid-template-columns: 8px 86px 1fr; gap: 0 8px; align-items: baseline; margin: 0; }
+.exch .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line); translate: 0 -1px; }
+.exch.open .dot { background: var(--up); }
+.exch.open .city { color: var(--text); }
 .quotes {
   display: grid; grid-auto-flow: column; gap: 0 28px;
   grid-auto-columns: max(140px, calc((100% - 84px) / 4));
@@ -250,7 +263,7 @@ HEAD_JS = """
 
 JS = """
 const root = document.documentElement;
-const state = { sort: 'time', group: '' };
+const state = { sort: 'time', group: '', region: '' };
 const arts = [...document.querySelectorAll('article')];
 const home = new Map(arts.map(a => [a, a.parentElement]));
 const flat = document.getElementById('flat');
@@ -263,11 +276,12 @@ function apply() {
   const list = byScore ? [...arts].sort((a, b) => b.dataset.score - a.dataset.score) : arts;
   list.forEach(a => {
     (byScore ? flat : home.get(a)).appendChild(a);
-    a.hidden = !!state.group && a.dataset.group !== state.group;
+    a.hidden = (!!state.group && a.dataset.group !== state.group)
+      || (!!state.region && a.dataset.region !== state.region);
   });
   document.querySelectorAll('.day').forEach(d => { d.hidden = !d.querySelector('article:not([hidden])'); });
 }
-for (const [attr, key] of [['sort', 'sort'], ['group', 'group']]) {
+for (const [attr, key] of [['sort', 'sort'], ['group', 'group'], ['region', 'region']]) {
   const buttons = document.querySelectorAll('[data-' + attr + ']');
   buttons.forEach(b => b.addEventListener('click', () => {
     state[key] = b.dataset[attr];
@@ -275,38 +289,42 @@ for (const [attr, key] of [['sort', 'sort'], ['group', 'group']]) {
     apply();
   }));
 }
-// Статус биржи США и отсчёт до следующего обновления считаются в браузере, по часам читателя.
+// Статус бирж и отсчёт до следующего обновления считаются в браузере, по часам читателя.
 const T = {
-  ru: { open: 'Биржа США открыта · закроется в {t}', closed: 'Биржа США закрыта · откроется: {d}, {t}',
+  ru: { open: 'открыта · закроется в {t}', closed: 'закрыта · откроется {d}, {t}',
         next: ' · следующее обновление через ~{t}', h: 'ч', m: 'мин' },
-  uk: { open: 'Біржа США відкрита · закриється о {t}', closed: 'Біржа США закрита · відкриється: {d}, {t}',
+  uk: { open: 'відкрита · закриється о {t}', closed: 'закрита · відкриється {d}, {t}',
         next: ' · наступне оновлення через ~{t}', h: 'год', m: 'хв' },
-  en: { open: 'US market is open · closes at {t}', closed: 'US market is closed · opens {d}, {t}',
+  en: { open: 'open · closes at {t}', closed: 'closed · opens {d}, {t}',
         next: ' · next update in ~{t}', h: 'h', m: 'min' },
 };
-const hoursEl = document.getElementById('hours');
+const exchanges = document.querySelectorAll('.exch');
 const nextEl = document.getElementById('next');
-const NY = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/New_York', weekday: 'short', year: 'numeric', month: 'numeric',
-  day: 'numeric', hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
-});
-function nyParts(ms) {
+const formats = {};
+// Дата и время по часам биржи (её часовой пояс) для момента ms.
+function parts(ms, tz) {
+  const f = formats[tz] || (formats[tz] = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, weekday: 'short', year: 'numeric', month: 'numeric',
+    day: 'numeric', hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
+  }));
   const p = {};
-  NY.formatToParts(new Date(ms)).forEach(x => { p[x.type] = x.value; });
+  f.formatToParts(new Date(ms)).forEach(x => { p[x.type] = x.value; });
   return p;
 }
-// Момент, когда в Нью-Йорке в этот календарный день 9:30 — обычное открытие биржи.
-function nyOpen(ms) {
-  const p = nyParts(ms);
-  const guess = Date.UTC(+p.year, p.month - 1, +p.day, 9, 30);
-  const g = nyParts(guess);
+// Момент, когда на бирже в календарный день момента ms часы показывают h:m.
+function wall(ms, tz, h, m) {
+  const p = parts(ms, tz);
+  const guess = Date.UTC(+p.year, p.month - 1, +p.day, h, m);
+  const g = parts(guess, tz);
   return guess - (Date.UTC(+g.year, g.month - 1, +g.day, +g.hour, +g.minute) - guess);
 }
-// Ближайшее открытие по обычному расписанию (будни); праздники биржи не учитываются.
-function nextOpen(now) {
+// Ближайшее открытие по обычному расписанию: будни, в тот же час, что и последняя сессия.
+// Праздники бирж не учитываются.
+function nextOpen(now, tz, start) {
+  const s = parts(start, tz);
   for (let d = 0; d < 8; d++) {
-    const t = nyOpen(now + d * 864e5);
-    const day = nyParts(t).weekday;
+    const t = wall(now + d * 864e5, tz, +s.hour, +s.minute);
+    const day = parts(t, tz).weekday;
     if (t > now && day !== 'Sat' && day !== 'Sun') return t;
   }
   return null;
@@ -314,17 +332,26 @@ function nextOpen(now) {
 function tick() {
   const lang = root.dataset.lang, L = T[lang] || T.en, now = Date.now();
   const time = ms => new Date(ms).toLocaleTimeString(lang, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-  if (hoursEl) {
-    const start = hoursEl.dataset.start * 1000, end = hoursEl.dataset.end * 1000;
-    if (now >= start && now < end) {
-      hoursEl.textContent = L.open.replace('{t}', time(end));
-    } else {
-      const open = now < start ? start : nextOpen(now);
-      hoursEl.textContent = open ? L.closed
-        .replace('{d}', new Date(open).toLocaleDateString(lang, { weekday: 'long' }))
-        .replace('{t}', time(open)) : '';
-    }
-  }
+  exchanges.forEach(el => {
+    const start = el.dataset.start * 1000, end = el.dataset.end * 1000;
+    const isOpen = now >= start && now < end;
+    let text = '';
+    try {
+      if (isOpen) {
+        text = L.open.replace('{t}', time(end));
+      } else {
+        const open = now < start ? start : nextOpen(now, el.dataset.tz, start);
+        if (open) {
+          text = L.closed
+            .replace('{d}', new Date(open).toLocaleDateString(lang, { weekday: 'short' }))
+            .replace('{t}', time(open));
+        }
+      }
+    } catch (e) {}
+    el.classList.toggle('open', isOpen);
+    el.hidden = !text;
+    el.querySelector('.state').textContent = text;
+  });
   if (nextEl) {
     const d = new Date(now);
     let best = Infinity;
@@ -428,9 +455,11 @@ def _article(row, min_score: int, group: str, also=()) -> str:
         return escape((i18n.get(lang) or {}).get(field) or fallback)
 
     scored = row["score"] is not None
+    region = row["region"] if row["region"] in REGIONS else ""
     cls = ' class="important"' if scored and row["score"] >= min_score else ""
     parts = [
-        f'<article data-group="{escape(group)}" data-score="{row["score"] if scored else -1}"{cls}>',
+        f'<article data-group="{escape(group)}" data-region="{region}"'
+        f' data-score="{row["score"] if scored else -1}"{cls}>',
         f'<time datetime="{escape(row["published"])}">{local:%H:%M}</time>',
         "<div>",
         f'<h3><a href="{escape(url)}" target="_blank" rel="noopener noreferrer">',
@@ -445,6 +474,8 @@ def _article(row, min_score: int, group: str, also=()) -> str:
         parts.append(_tr([text("ru", "summary") or summary, text("uk", "summary") or summary, summary], "p", "summary"))
 
     meta = [escape(row["source"])]
+    if region:
+        meta.append(_tr([escape(s) for s in REGIONS[region]]))
     if row["sector"] in SECTORS:
         meta.append(_tr([escape(s) for s in SECTORS[row["sector"]]]))
     if row["tickers"]:
@@ -528,12 +559,16 @@ def _pulse(data: dict) -> str:
         for s, q in ((s, quotes[s]) for s in symbols)
     )
     # Открыта ли биржа и когда откроется или закроется, дописывает скрипт — по часам читателя.
-    session = data.get("session") or {}
-    hours = (
-        f'<p class="hours" id="hours" data-start="{int(session["start"])}" data-end="{int(session["end"])}"></p>'
-        if session.get("start") and session.get("end")
-        else ""
+    sessions = data.get("sessions") or {}
+    rows = "".join(
+        f'<p class="exch" data-tz="{escape(s["tz"])}" data-start="{int(s["start"])}" data-end="{int(s["end"])}">'
+        f'<span class="dot"></span><span class="city">{_tr([escape(n) for n in names])}</span>'
+        '<span class="state"></span></p>'
+        for symbol, names in EXCHANGES
+        for s in [sessions.get(symbol) or {}]
+        if s.get("start") and s.get("end") and re.fullmatch(r"[A-Za-z_]+(/[A-Za-z_+-]+)+", str(s.get("tz", "")))
     )
+    hours = f'<div class="hours" id="hours">{rows}</div>' if rows else ""
     return (
         f'<section class="market pulse"><h2>{_ui("pulse")} {asof}</h2>{hours}'
         f'<div class="quotes" tabindex="0">{cards}</div></section>'
@@ -607,6 +642,14 @@ def _controls(rows, by_sector: bool, any_scored: bool, quotes: dict) -> str:
             for key, label in groups
         ]
         navs.append(f'<nav aria-label="filter">{"".join(buttons)}</nav>')
+    regions = [k for k in REGIONS if any(r["region"] == k for r in rows)]
+    if len(regions) > 1:
+        buttons = [f'<button type="button" data-region="" aria-pressed="true">{_ui("all_regions")}</button>'] + [
+            f'<button type="button" data-region="{k}" aria-pressed="false">'
+            f'{_tr([escape(s) for s in REGIONS[k]])}</button>'
+            for k in regions
+        ]
+        navs.insert(1 if any_scored else 0, f'<nav aria-label="region">{"".join(buttons)}</nav>')
     return f'<div class="controls">{"".join(navs)}</div>' if navs else ""
 
 

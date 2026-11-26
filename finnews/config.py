@@ -11,6 +11,14 @@ FEEDS: list[tuple[str, str]] = [
     ("CNBC", "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
     ("CNBC Finance", "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
     ("Federal Reserve", "https://www.federalreserve.gov/feeds/press_all.xml"),
+    # Европа
+    ("CNBC Europe", "https://www.cnbc.com/id/19794221/device/rss/rss.html"),
+    ("DW Business", "https://rss.dw.com/rdf/rss-en-bus"),
+    ("ECB", "https://www.ecb.europa.eu/rss/press.html"),
+    # Азия
+    ("CNBC Asia", "https://www.cnbc.com/id/19832390/device/rss/rss.html"),
+    ("SCMP Business", "https://www.scmp.com/rss/92/feed"),
+    ("Yahoo Finance (Nikkei)", "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EN225&region=US&lang=en-US"),
 ]
 
 
