@@ -5,7 +5,7 @@
 - инфляция и безработица США — Бюро статистики труда США (api.bls.gov, без ключа до 25 запросов
   в сутки с одного адреса);
 - ставка ЕЦБ — портал данных ЕЦБ (data-api.ecb.europa.eu);
-- безработица еврозоны — Eurostat;
+- инфляция и безработица еврозоны — Eurostat;
 - доходность 10-летних облигаций США — индекс ^TNX из Yahoo Finance.
 
 Каждый показатель загружается отдельно: если источник не ответил, остальные всё равно
@@ -22,7 +22,8 @@ from . import market
 log = logging.getLogger(__name__)
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
-ORDER = ("fed", "us_cpi", "us_unemployment", "us_10y", "ecb", "eu_unemployment")
+ORDER = ("fed", "us_cpi", "us_unemployment", "us_10y", "ecb", "eu_cpi", "eu_unemployment")
+EUROSTAT = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/"
 
 
 def _get(url: str, **kwargs) -> httpx.Response:
@@ -107,28 +108,39 @@ def ecb() -> dict:
     return {"value": float(row[head.index("OBS_VALUE")]), "period": row[head.index("TIME_PERIOD")]}
 
 
-def eu_unemployment() -> dict:
-    """Безработица еврозоны; последний месяц у Eurostat иногда ещё пуст — берём последний заполненный."""
-    url = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/une_rt_m"
-    params = {
-        "format": "JSON", "geo": "EA21", "s_adj": "SA", "age": "TOTAL", "sex": "T", "unit": "PC_ACT",
-        "lastTimePeriod": 4,
-    }
-    data = _get(url, params=params).json()
+def _eurostat(dataset: str, get=None, **filters) -> dict:
+    """Последнее заполненное значение ряда Eurostat и значение перед ним.
+
+    Последний месяц у Eurostat иногда ещё пуст — берём последний заполненный.
+    get(dataset, params) -> JSON; по умолчанию запрос к Eurostat.
+    """
+    params = {"format": "JSON", **filters, "lastTimePeriod": 4}
+    data = get(dataset, params) if get else _get(EUROSTAT + dataset, params=params).json()
     periods = {index: period for period, index in data["dimension"]["time"]["category"]["index"].items()}
     filled = sorted((periods[int(i)], float(v)) for i, v in data["value"].items() if v is not None)
     if not filled:
-        raise RuntimeError("Eurostat: нет значений")
+        raise RuntimeError(f"Eurostat {dataset}: нет значений")
     result = {"value": filled[-1][1], "period": filled[-1][0]}
     if len(filled) > 1:
         result["prev"] = filled[-2][1]
     return result
 
 
+def eu_cpi(get=None) -> dict:
+    """Инфляция еврозоны за год по индексу HICP (все товары и услуги)."""
+    return _eurostat("prc_hicp_minr", get, geo="EA", coicop18="TOTAL", unit="RCH_A")
+
+
+def eu_unemployment(get=None) -> dict:
+    """Безработица еврозоны."""
+    return _eurostat("une_rt_m", get, geo="EA21", s_adj="SA", age="TOTAL", sex="T", unit="PC_ACT")
+
+
 def fetch(sources=None) -> dict:
     """Загружает показатели. sources — {название: функция} для подмены в тестах."""
     sources = sources or {
-        "fed": fed, "bls": bls, "us_10y": us_10y, "ecb": ecb, "eu_unemployment": eu_unemployment,
+        "fed": fed, "bls": bls, "us_10y": us_10y, "ecb": ecb, "eu_cpi": eu_cpi,
+        "eu_unemployment": eu_unemployment,
     }
     result = {}
     for name, load in sources.items():
@@ -164,6 +176,7 @@ def summary(data: dict) -> str:
             "us_unemployment": "Безработица в США",
             "us_10y": "Доходность 10-летних облигаций США",
             "ecb": "Депозитная ставка ЕЦБ",
+            "eu_cpi": "Инфляция в еврозоне за год",
             "eu_unemployment": "Безработица в еврозоне",
         }[key]
         before = f", до этого {item['prev']}%" if "prev" in item else ""

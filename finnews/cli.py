@@ -6,10 +6,10 @@ import sys
 
 from datetime import date, datetime, timedelta, timezone
 
-from . import db, earnings, macro, market, site, telegram
+from . import db, earnings, hours, macro, market, site, telegram
 from .collect import collect
 from .config import load_config, yahoo_ticker_feed
-from .llm import build_brief, build_digest, build_weekly, group_events, score_articles
+from .llm import build_brief, build_digest, build_weekly, explain_movers, group_events, score_articles
 
 
 def cmd_collect(cfg, conn, args) -> None:
@@ -54,6 +54,10 @@ def cmd_events(cfg, conn, args) -> None:
     print(f"Событий с повторами склеено: {group_events(cfg, conn, hours=args.hours)}")
 
 
+def cmd_movers(cfg, conn, args) -> None:
+    print(f"Лидеров дня с объяснением: {explain_movers(cfg, conn, hours=args.hours)}")
+
+
 def cmd_brief(cfg, conn, args) -> None:
     done = build_brief(cfg, conn, hours=args.hours)
     print("Обзор дня готов." if done else "Нет новостей для обзора дня.")
@@ -65,6 +69,7 @@ def cmd_prices(cfg, conn, args) -> dict:
         print("Котировки недоступны — страница соберётся без них.")
         return data
     data["earnings"] = earnings.upcoming(cfg)
+    data["hours"] = hours.upcoming()
     db.save_market(conn, json.dumps(data, ensure_ascii=False))
     conn.commit()
     print(f"Котировок получено: {len(data['quotes'])}")
@@ -115,6 +120,7 @@ def cmd_update(cfg, conn, args) -> None:
     if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
         cmd_score(cfg, conn, args)
         cmd_events(cfg, conn, args)
+        cmd_movers(cfg, conn, args)
         cmd_brief(cfg, conn, args)
         cmd_weekly(cfg, conn, args)
     else:
@@ -155,13 +161,14 @@ def main() -> None:
     for name, func, help_ in (
         ("brief", cmd_brief, "написать обзор дня на трёх языках"),
         ("events", cmd_events, "склеить новости об одном событии"),
+        ("movers", cmd_movers, "объяснить движение лидеров дня по новостям о них"),
     ):
         p = sub.add_parser(name, help=help_)
         p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")
         p.set_defaults(func=func)
     for name, func, help_ in (
         ("site", cmd_site, "собрать веб-страницу с новостями"),
-        ("update", cmd_update, "всё для сайта: collect + prices + score + events + brief + site"),
+        ("update", cmd_update, "всё для сайта: collect + prices + score + events + movers + brief + site"),
     ):
         p = sub.add_parser(name, help=help_)
         p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")

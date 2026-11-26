@@ -82,6 +82,12 @@ MACRO = {
          "Головна ставка єврозони. Працює так само, як ставка ФРС.",
          "The euro area's key rate. It works the same way as the Fed rate."),
     ),
+    "eu_cpi": (
+        ("Инфляция в еврозоне", "Інфляція в єврозоні", "Euro area inflation"),
+        ("Насколько выросли цены за год в странах с евро. ЕЦБ стремится к 2%.",
+         "Наскільки зросли ціни за рік у країнах з євро. ЄЦБ прагне 2%.",
+         "How much prices rose over a year in the countries that use the euro. The ECB aims for 2%."),
+    ),
     "eu_unemployment": (
         ("Безработица в еврозоне", "Безробіття в єврозоні", "Euro area unemployment"),
         ("То же, что в США, но для стран с евро.",
@@ -150,6 +156,12 @@ UI = {
         "у стрічці новин про це немає",
         "no related story in the feed",
     ),
+    "no_reason": (
+        "новости о компании это движение не объясняют",
+        "новини про компанію цей рух не пояснюють",
+        "the news about the company doesn't explain this move",
+    ),
+    "source": ("новость →", "новина →", "story →"),
     "quotes_note": (
         "Котировки: Yahoo Finance, на момент обновления страницы.",
         "Котирування: Yahoo Finance, на момент оновлення сторінки.",
@@ -415,7 +427,7 @@ function wall(ms, tz, h, m) {
   return guess - (Date.UTC(+g.year, g.month - 1, +g.day, +g.hour, +g.minute) - guess);
 }
 // Ближайшее открытие по обычному расписанию: будни, в тот же час, что и последняя сессия.
-// Праздники бирж не учитываются.
+// Запасной путь без праздников — когда календаря биржи на странице нет или он закончился.
 function nextOpen(now, tz, start) {
   const s = parts(start, tz);
   for (let d = 0; d < 8; d++) {
@@ -429,7 +441,11 @@ function tick() {
   const lang = root.dataset.lang, L = T[lang] || T.en, now = Date.now();
   const time = ms => new Date(ms).toLocaleTimeString(lang, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   exchanges.forEach(el => {
-    const start = el.dataset.start * 1000, end = el.dataset.end * 1000;
+    let start = el.dataset.start * 1000, end = el.dataset.end * 1000;
+    // Календарь биржи: первая сессия, которая ещё не закончилась (праздники в него не входят).
+    const cal = (el.dataset.sessions || '').split(',').map(x => x.split('-').map(Number))
+      .find(x => x[1] * 1000 > now);
+    if (cal) { start = cal[0] * 1000; end = cal[1] * 1000; }
     const isOpen = now >= start && now < end;
     let text = '';
     try {
@@ -702,8 +718,19 @@ def _pulse(data: dict) -> str:
     )
     # Открыта ли биржа и когда откроется или закроется, дописывает скрипт — по часам читателя.
     sessions = data.get("sessions") or {}
+    calendar = data.get("hours") if isinstance(data.get("hours"), dict) else {}
+
+    def ahead(symbol: str) -> str:
+        """Сессии из календаря биржи (hours.upcoming) — с праздниками и короткими днями."""
+        try:
+            pairs = [f"{int(a)}-{int(b)}" for a, b in calendar.get(symbol) or []]
+        except (TypeError, ValueError):
+            return ""
+        return f' data-sessions="{",".join(pairs)}"' if pairs else ""
+
     rows = "".join(
-        f'<p class="exch" data-tz="{escape(s["tz"])}" data-start="{int(s["start"])}" data-end="{int(s["end"])}">'
+        f'<p class="exch" data-tz="{escape(s["tz"])}" data-start="{int(s["start"])}" data-end="{int(s["end"])}"'
+        f'{ahead(symbol)}>'
         f'<span class="dot"></span><span class="city">{_tr([escape(n) for n in names])}</span>'
         '<span class="state"></span></p>'
         for symbol, names in EXCHANGES
@@ -717,11 +744,18 @@ def _pulse(data: dict) -> str:
     )
 
 
-def _movers(data: dict, rows, count: int = 3) -> str:
-    """Лидеры роста и падения среди крупных компаний и новость из ленты, которая это объясняет."""
+def _movers(data: dict, rows, reasons: dict | None = None, count: int = 3) -> str:
+    """Лидеры роста и падения среди крупных компаний и с чем связано их движение.
+
+    reasons — объяснения от модели (llm.explain_movers); берутся, только если написаны для этого
+    же снимка котировок. Без них показывается самая важная новость о компании из ленты.
+    """
     symbols = top_movers(data, count)
     if not symbols:
         return ""
+    reasons = reasons if reasons and reasons.get("asof") == data.get("asof") else {}
+    explained = reasons.get("items") if isinstance(reasons.get("items"), dict) else {}
+    by_id = {row["id"]: row for row in rows}
     stories: dict = {}
     for row in rows:
         if (row["score"] or 0) < STORY_MIN_SCORE:
@@ -733,8 +767,21 @@ def _movers(data: dict, rows, count: int = 3) -> str:
     items = []
     for symbol in symbols:
         q = data["quotes"][symbol]
-        row = stories.get(symbol)
-        if row is not None and row["url"].startswith(("http://", "https://")):
+        why = explained.get(symbol)
+        why = why if isinstance(why, dict) else None
+        texts = [str(why.get(lang) or "").strip() for lang in LANGS] if why else []
+        row = (by_id.get(why.get("story")) if why else None) or stories.get(symbol)
+        linked = row is not None and row["url"].startswith(("http://", "https://"))
+        if texts and all(texts):
+            because = _tr([escape(t) for t in texts])
+            if linked:
+                because += (
+                    f' <a href="{escape(row["url"])}" target="_blank" rel="noopener noreferrer">'
+                    f'{_ui("source")}</a>'
+                )
+        elif why is not None:
+            because = _ui("no_reason")  # новости о компании есть, но движение они не объясняют
+        elif linked:
             i18n = _loads(row["i18n"])
             titles = [
                 escape((i18n.get("ru") or {}).get("title") or row["title"]),
@@ -1143,7 +1190,7 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
 {_pulse(market)}
 {_brief(_loads(db.latest_brief(conn, hours=hours)))}
 {week_link}
-{_movers(market, rows)}
+{_movers(market, rows, _loads(db.get(conn, "movers")[0]))}
 {_macro(macro)}
 {_earnings(market)}
 {_feed(cfg, rows, today, quotes)}

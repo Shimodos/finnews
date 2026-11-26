@@ -17,8 +17,8 @@ https://shimodos.github.io/finnews/. Исходно проект был дайд
 
 - Установка зависимостей: `uv sync` (без uv: `python -m venv .venv`, `pip install -e .`, pytest отдельно)
 - Тесты: `uv run pytest`
-- Всё для сайта: `uv run finnews update` — collect, prices, macro, score, events, brief, weekly, site
-- Отдельные шаги: `collect`, `prices`, `macro`, `score`, `events`, `brief`, `weekly`, `site`
+- Всё для сайта: `uv run finnews update` — collect, prices, macro, score, events, movers, brief, weekly, site
+- Отдельные шаги: `collect`, `prices`, `macro`, `score`, `events`, `movers`, `brief`, `weekly`, `site`
 - Только пересобрать страницы из базы, без сети и без трат: `uv run finnews site`
 - Telegram: `uv run finnews run --dry-run`, `digest`, `chat-id`
 
@@ -28,12 +28,16 @@ https://shimodos.github.io/finnews/. Исходно проект был дайд
 - `finnews/collect.py` — сбор RSS и дедупликация (по URL и похожести заголовков).
 - `finnews/market.py` — котировки и часы бирж (Yahoo Finance): индексы, биржи, фонды сфер,
   список крупных компаний, лидеры дня.
+- `finnews/hours.py` — ближайшие торговые сессии бирж с праздниками и короткими днями
+  (библиотека `exchange_calendars`, без сети); попадают в снимок котировок под ключом `hours`.
 - `finnews/earnings.py` — календарь отчётов (Nasdaq).
 - `finnews/macro.py` — макроданные из официальных источников (ФРБ Нью-Йорка, BLS, ЕЦБ, Eurostat);
   хранятся в таблице `store`, обновляются не чаще раза в 12 часов.
 - `finnews/llm.py` — вызовы Claude и тексты инструкций: оценка с переводом (Haiku), склейка
-  повторов (Haiku), обзор дня, обзор недели и дайджест (Sonnet). Обзор недели пишется один
-  раз, в выходные, и лежит в таблице `store` под ключом `week:<понедельник>`.
+  повторов (Haiku), объяснение движения лидеров дня (Haiku), обзор дня, обзор недели и
+  дайджест (Sonnet). Обзор недели пишется один раз, в выходные, и лежит в таблице `store` под
+  ключом `week:<понедельник>`. Объяснения лидеров лежат под ключом `movers` вместе с отметкой
+  `asof` снимка котировок; к другому снимку страница их не прикладывает.
 - `finnews/db.py` — SQLite: `articles`, `briefs` (обзор на каждый день), `market` (последний
   снимок котировок и календаря). Новые колонки добавляются через `MIGRATIONS`.
 - `finnews/site.py` — сборка страниц: главная, архив с поиском (`search.json`), страницы дней и недель, словарик. Один файл с
@@ -48,7 +52,7 @@ https://shimodos.github.io/finnews/. Исходно проект был дайд
 - Ключи и токены лежат только в `.env` и в секретах репозитория; в git и в чат они не попадают.
 - Инструмент объясняет новости и не даёт советов покупать или продавать конкретные бумаги.
 - Модели задаются через `FINNEWS_SCORE_MODEL` и `FINNEWS_DIGEST_MODEL`; идентификаторы моделей в коде не менять без просьбы.
-- Команды `update`, `score`, `events`, `brief`, `weekly` тратят деньги на Claude API — не запускать их без надобности; для проверки вёрстки хватает `site`.
+- Команды `update`, `score`, `events`, `movers`, `brief`, `weekly` тратят деньги на Claude API — не запускать их без надобности; для проверки вёрстки хватает `site`.
 - Любой текст на странице — на трёх языках (ru, uk, en) через `UI` и `_tr`.
 - Yahoo и Nasdaq — неофициальные источники: их отказ не должен ломать сборку, блок просто не показывается.
 - Локальная `finnews.db` и база в ветке `data` не связаны; на сайт попадает только вторая.

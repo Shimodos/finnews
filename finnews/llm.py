@@ -111,6 +111,26 @@ EVENTS_SYSTEM = """Тебе дают пронумерованный список
 EVENTS_MIN_SCORE = 4  # шум (0-3) не склеиваем: он и так внизу ленты
 EVENTS_LIMIT = 80
 
+MOVERS_SYSTEM = """Ты объясняешь начинающему инвестору, почему акции компании за день заметно \
+выросли или упали. Тебе дают компании — тикер, название, изменение цены за день — и под каждой \
+пронумерованные новости о ней за последние сутки.
+
+Для каждой компании напиши одно короткое предложение на трёх языках — ru (русский), \
+uk (украинский), en (английский): с чем связано движение. Опирайся только на эти новости: \
+ничего не добавляй от себя, не придумывай цифры и события.
+
+Если новости движение не объясняют — они о другом, слишком общие или говорят об обратном \
+направлении, — верни для этой компании пустые строки и story = -1. Честное «неизвестно» лучше \
+догадки. Не выдавай совпадение по времени за причину: пиши «после…», «на фоне…», если новость \
+сама прямо не называет причину движения.
+
+story — index новости, на которую ты опираешься сильнее всего.
+Правила: простой язык; не давай советов покупать или продавать; названия компаний и тикеры \
+не переводи; смысл на трёх языках одинаковый; это чистовой текст — без оговорок и самоисправлений."""
+
+MOVERS_MIN_SCORE = 4  # как на странице: шумом (0-3) движение не объясняем
+MOVERS_STORIES = 5  # сколько новостей о компании показывать модели
+
 DIGEST_SYSTEM = """Ты пишешь ежедневный дайджест финансовых новостей на русском языке \
 для начинающего инвестора. Он только начинает покупать ценные бумаги и хочет понимать, \
 что происходит на рынке и почему это важно, а не получать торговые сигналы.
@@ -193,6 +213,18 @@ class EventGroup(BaseModel):
 
 class EventGroups(BaseModel):
     groups: list[EventGroup]
+
+
+class MoverReason(BaseModel):
+    symbol: str
+    story: int
+    ru: str
+    uk: str
+    en: str
+
+
+class MoverReasons(BaseModel):
+    items: list[MoverReason]
 
 
 def _text(response) -> str:
@@ -287,6 +319,65 @@ def group_events(
     db.set_events(conn, groups, hours=hours)
     conn.commit()
     return len(groups)
+
+
+def explain_movers(
+    cfg: Config, conn, *, hours: int = 24, client: anthropic.Anthropic | None = None
+) -> int:
+    """Объясняет движение лидеров дня по новостям о них. Возвращает число объяснённых компаний.
+
+    Результат лежит в хранилище под ключом movers вместе с отметкой снимка котировок (asof),
+    к которому он относится: к другому снимку страница его не приложит.
+    """
+    try:
+        data = json.loads(db.latest_market(conn, hours=hours) or "{}")
+    except json.JSONDecodeError:
+        return 0
+    quotes = data.get("quotes") or {}
+    rows = sorted(db.recent(conn, hours=hours), key=lambda r: -(r["score"] or 0))
+    stories: list = []  # сквозная нумерация: index новости -> строка базы
+    blocks = []
+    for symbol in market.movers(data):
+        related = [
+            r for r in rows
+            if (r["score"] or 0) >= MOVERS_MIN_SCORE and symbol in (r["tickers"] or "").split(",")
+        ][:MOVERS_STORIES]
+        if not related:
+            continue
+        lines = [f"{symbol} — {quotes[symbol]['name']}, за день {quotes[symbol]['change']:+.2f}%"]
+        for r in related:
+            lines.append(f"index: {len(stories)}\nзаголовок: {r['title']}\nописание: {r['summary'][:400]}")
+            stories.append((symbol, r["id"]))
+        blocks.append("\n".join(lines))
+    items: dict = {}
+    if blocks:
+        client = client or anthropic.Anthropic()
+        response = client.messages.parse(
+            model=cfg.score_model,
+            max_tokens=16000,
+            output_config={"effort": "low"},
+            system=MOVERS_SYSTEM,
+            messages=[{"role": "user", "content": "\n\n".join(blocks)}],
+            output_format=MoverReasons,
+        )
+        if response.stop_reason != "end_turn" or response.parsed_output is None:
+            log.warning("Движение лидеров не объяснено (stop_reason=%s)", response.stop_reason)
+            return 0
+        asked = {symbol for symbol, _ in stories}
+        for item in response.parsed_output.items:
+            symbol = item.symbol.upper()
+            if symbol not in asked:
+                continue
+            texts = {"ru": item.ru.strip(), "uk": item.uk.strip(), "en": item.en.strip()}
+            if not all(texts.values()):
+                texts = {"ru": "", "uk": "", "en": ""}  # новости движение не объясняют
+            # ссылка — только на новость об этой же компании
+            if all(texts.values()) and 0 <= item.story < len(stories) and stories[item.story][0] == symbol:
+                texts["story"] = stories[item.story][1]
+            items[symbol] = texts
+    db.put(conn, "movers", json.dumps({"asof": data.get("asof"), "items": items}, ensure_ascii=False))
+    conn.commit()
+    return sum(1 for texts in items.values() if texts["ru"])
 
 
 def build_brief(

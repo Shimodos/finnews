@@ -5,8 +5,8 @@ from finnews import db
 from finnews.collect import clean, is_duplicate, title_key
 from finnews.config import Config
 from finnews.llm import (
-    Brief, BriefText, EventGroup, EventGroups, Score, ScoreBatch, Week, WeekText,
-    build_brief, build_digest, build_weekly, group_events, score_articles,
+    Brief, BriefText, EventGroup, EventGroups, MoverReason, MoverReasons, Score, ScoreBatch, Week, WeekText,
+    build_brief, build_digest, build_weekly, explain_movers, group_events, score_articles,
 )
 from finnews.telegram import split_message
 
@@ -44,6 +44,14 @@ class FakeClient:
             apple = [i for i, block in enumerate(blocks) if "Apple" in block]
             groups = [EventGroup(indexes=[*apple, 99]), EventGroup(indexes=[len(blocks) - 1])]
             return SimpleNamespace(stop_reason="end_turn", parsed_output=EventGroups(groups=groups))
+        if kw["output_format"] is MoverReasons:
+            self.movers_prompt = kw["messages"][0]["content"]
+            # ZZZ не спрашивали — должен отсеяться; story 99 не существует — ссылка не сохранится
+            items = [
+                MoverReason(symbol="aapl", story=0, ru="Причина <роста>", uk="Причина", en="Reason"),
+                MoverReason(symbol="ZZZ", story=99, ru="Лишнее", uk="Лишнее", en="Extra"),
+            ]
+            return SimpleNamespace(stop_reason="end_turn", parsed_output=MoverReasons(items=items))
         if kw["output_format"] is Week:
             self.week_prompt = kw["messages"][0]["content"]
             text = WeekText(overview="Итог <недели>", themes=["Сюжет"], ahead=["Отчёт CRM"], takeaway="Вывод")
@@ -268,14 +276,23 @@ def test_macro(tmp_path):
     def broken():
         raise RuntimeError("нет ответа")
 
+    def fake_eurostat(dataset, params):
+        assert dataset == "prc_hicp_minr" and params["coicop18"] == "TOTAL" and params["unit"] == "RCH_A"
+        return {
+            "dimension": {"time": {"category": {"index": {"2026-08": 0, "2026-09": 1, "2026-10": 2}}}},
+            "value": {"0": 3.2, "1": 3.8, "2": None},
+        }
+
     data = macro.refresh(
         {"ecb": {"value": 2.5, "period": "2026-11-20"}},  # прошлое значение
         sources={
             "fed": lambda: {"low": 3.75, "high": 4.0, "period": "2026-11-24"},
             "bls": lambda: macro.bls(today=date(2026, 11, 27), post=fake_bls),
             "ecb": broken,
+            "eu_cpi": lambda: macro.eu_cpi(get=fake_eurostat),
         },
     )
+    assert data["eu_cpi"] == {"value": 3.8, "period": "2026-09", "prev": 3.2}  # пустой октябрь пропущен
     assert data["us_cpi"] == {"value": 3.1, "period": "2026-10", "prev": 2.8}  # 330/320 и 327/318
     assert data["us_unemployment"] == {"value": 4.1, "period": "2026-10", "prev": 4.2}
     assert data["ecb"]["value"] == 2.5  # источник не ответил — осталось прежнее значение
@@ -294,7 +311,8 @@ def test_macro(tmp_path):
     assert "Инфляция в США за год: 3.1% (за 2026-10, до этого 2.8%)" in client.brief_prompt
 
     block = site.render(cfg, conn).split('class="market macro"')[1].split("</section>")[0]
-    assert block.count('class="fact"') == 4
+    assert block.count('class="fact"') == 5
+    assert "Euro area inflation" in block and "3.8%" in block and "09.2026" in block
     assert "3.75–4.00%" in block and "3.1%" in block and "10.2026" in block and "2.8%" in block
     assert "2.50%" in block and "20.11.2026" in block
 
@@ -335,6 +353,33 @@ def test_earnings(tmp_path):
     assert "среда, 2 декабря" in block and "Wednesday, December 2" in block
     assert "Salesforce &lt;Inc&gt;" in block and "после закрытия" in block
     assert "прогноз прибыли на акцию</span>" in block and ": $2.41" in block and ": −$0.32" in block
+
+
+def test_hours(tmp_path):
+    import json
+    from datetime import datetime, timezone
+
+    from finnews import hours, market, site
+
+    def utc(*args):
+        return int(datetime(*args, tzinfo=timezone.utc).timestamp())
+
+    # четверг 26 ноября 2026 — День благодарения: Нью-Йорк закрыт, в пятницу короткая сессия
+    ahead = hours.upcoming(now=datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc))
+    assert set(ahead) == {"^GSPC", "^FTSE", "^GDAXI", "^N225", "^HSI"}
+    assert ahead["^GSPC"][0] == [utc(2026, 11, 27, 14, 30), utc(2026, 11, 27, 18, 0)]
+    assert ahead["^GSPC"][1] == [utc(2026, 11, 30, 14, 30), utc(2026, 11, 30, 21, 0)]
+    assert ahead["^FTSE"][0] == [utc(2026, 11, 26, 8, 0), utc(2026, 11, 26, 16, 30)]  # сессия идёт
+    assert ahead["^N225"][0][0] == utc(2026, 11, 27, 0, 0)  # сегодняшняя уже закончилась
+
+    cfg = Config(db_path=str(tmp_path / "t.db"))
+    data = market.snapshot(cfg, get=fake_yahoo)
+    data["hours"] = {**ahead, "^HSI": "мусор"}
+    conn = db.connect(cfg.db_path)
+    db.save_market(conn, json.dumps(data))
+    page = site.render(cfg, conn)
+    assert page.count('class="exch"') == 5 and page.count("data-sessions=") == 4
+    assert f'data-sessions="{utc(2026, 11, 27, 14, 30)}-{utc(2026, 11, 27, 18, 0)},' in page
 
 
 def fake_yahoo(symbol):
@@ -408,3 +453,19 @@ def test_market(tmp_path):
     # у сферы «Технологии» — изменение её фонда, у «Экономики» фонда нет
     assert '<span class="chg down">−1.00%</span></button>' in page
     assert page.count("−1.00%") == 1
+
+    assert "data-sessions" not in page  # календаря бирж в снимке нет — часы считаются по будням
+
+    # объяснение движения от модели: по AAPL новость есть, по NVDA спрашивать не о чем
+    client = FakeClient()
+    assert explain_movers(cfg, conn, client=client) == 1
+    assert "AAPL — AAPL <Inc>, за день +10.00%" in client.movers_prompt
+    assert "NVDA" not in client.movers_prompt and "Fed holds rates" not in client.movers_prompt
+    movers = site.render(cfg, conn).split('class="market movers"')[1].split("</section>")[0]
+    assert "Причина &lt;роста&gt;" in movers and "Лишнее" not in movers
+    assert 'href="https://example.com/0"' in movers and "Apple beats earnings" not in movers
+    assert "в ленте новостей об этом нет" in movers
+    # объяснение относится к своему снимку котировок: к новому снимку оно не прикладывается
+    db.save_market(conn, json.dumps({**data, "asof": "2026-11-27T00:00:00+00:00"}))
+    movers = site.render(cfg, conn).split('class="market movers"')[1].split("</section>")[0]
+    assert "Причина" not in movers and "Apple beats earnings" in movers
