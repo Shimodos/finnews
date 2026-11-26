@@ -6,7 +6,7 @@ from typing import Literal
 import anthropic
 from pydantic import BaseModel
 
-from . import db
+from . import db, market
 from .config import Config
 
 log = logging.getLogger(__name__)
@@ -43,6 +43,14 @@ BRIEF_SYSTEM = """Ты объясняешь начинающему инвест�
 
 Тебе дают отобранные новости за последние сутки с оценкой важности. Используй только факты \
 из этих новостей, не придумывай цифры и события.
+
+Перед новостями могут идти котировки — это точные данные биржи за последнюю торговую сессию. \
+Если они есть:
+- куда и насколько двигался рынок за день, бери только из котировок, а не из заголовков;
+- цифра из заголовка, которая расходится с котировками, обычно относится к другому периоду \
+(неделя, месяц, от максимума) — тогда либо прямо назови этот период, либо не приводи цифру;
+- не пиши, что рынок вырос или упал, если котировки показывают обратное;
+- если последняя сессия была не сегодня (выходной или праздник), скажи об этом.
 
 Верни один и тот же обзор на трёх языках — ru (русский), uk (украинский), en (английский):
 - overview — 2-3 предложения: общая картина дня, что двигает рынок и в какую сторону.
@@ -244,12 +252,19 @@ def build_brief(
         for r in rows
     )
     now = datetime.now().astimezone()
+    try:
+        quotes = market.summary(json.loads(db.latest_market(conn, hours=hours) or "{}"))
+    except (json.JSONDecodeError, KeyError, TypeError):
+        quotes = ""
+    quotes = f"Котировки:\n{quotes}\n\n" if quotes else ""
     response = client.messages.parse(
         model=cfg.digest_model,
         max_tokens=16000,
         output_config={"effort": "medium"},
         system=BRIEF_SYSTEM,
-        messages=[{"role": "user", "content": f"Дата: {now:%d.%m.%Y}\n\nНовости:\n\n{listing}"}],
+        messages=[
+            {"role": "user", "content": f"Дата: {now:%d.%m.%Y}\n\n{quotes}Новости:\n\n{listing}"}
+        ],
         output_format=Brief,
     )
     if response.stop_reason != "end_turn" or response.parsed_output is None:

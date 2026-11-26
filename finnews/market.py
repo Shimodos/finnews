@@ -63,6 +63,10 @@ def parse(result: dict, *, with_points: bool) -> dict | None:
             timespec="seconds"
         ),
     }
+    # Обычная торговая сессия, к которой относится цена: начало и конец в секундах Unix.
+    regular = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
+    if regular.get("start") and regular.get("end"):
+        item["session"] = {"start": int(regular["start"]), "end": int(regular["end"])}
     if with_points:
         quotes = ((result.get("indicators") or {}).get("quote") or [{}])[0]
         closes = [c for c in quotes.get("close") or [] if c is not None]
@@ -77,6 +81,37 @@ def movers(data: dict, count: int = 3) -> list[str]:
     gainers = sorted((x for x in stocks if x[1] > 0), key=lambda x: -x[1])[:count]
     losers = sorted((x for x in stocks if x[1] < 0), key=lambda x: x[1])[:count]
     return [s for s, _ in gainers + losers]
+
+
+def _signed(change: float) -> str:
+    return f"{change:+.2f}%"
+
+
+def summary(data: dict) -> str:
+    """Котировки текстом — для модели, чтобы обзор дня опирался на данные биржи."""
+    quotes = data.get("quotes") or {}
+    if not quotes:
+        return ""
+    first = next((quotes[s] for s in INDEXES if s in quotes), None)
+    lines = []
+    if first:
+        lines.append(f"Последняя торговая сессия: {first['time'][:10]} (время UTC {first['time'][11:16]}).")
+    lines += [
+        f"{quotes[s]['name']}: {quotes[s]['price']:,.2f}, за день {_signed(quotes[s]['change'])}"
+        for s in data.get("pulse") or []
+        if s in quotes
+    ]
+    sectors = [
+        f"{sector} ({symbol}) {_signed(quotes[symbol]['change'])}"
+        for sector, symbol in SECTOR_SYMBOLS.items()
+        if symbol in quotes and sector != "markets"
+    ]
+    if sectors:
+        lines.append("Сферы по отраслевым фондам: " + "; ".join(sectors))
+    leaders = [f"{s} {_signed(quotes[s]['change'])}" for s in movers(data)]
+    if leaders:
+        lines.append("Сильнее всего изменились среди крупных компаний: " + "; ".join(leaders))
+    return "\n".join(lines)
 
 
 def _http_get(symbol: str) -> dict:
@@ -110,4 +145,10 @@ def snapshot(cfg: Config, *, get=None) -> dict:
     for symbol, name in INDEXES.items():
         if symbol in quotes:
             quotes[symbol]["name"] = name
-    return {"asof": db.now_iso(), "pulse": [s for s in pulse if s in quotes], "quotes": quotes}
+    session = next((quotes[s]["session"] for s in INDEXES if "session" in quotes.get(s, {})), None)
+    return {
+        "asof": db.now_iso(),
+        "pulse": [s for s in pulse if s in quotes],
+        "session": session,
+        "quotes": quotes,
+    }

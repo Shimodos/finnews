@@ -18,11 +18,13 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
-# Сборка и публикация — отдельные задания: если публикация споткнётся, база с уже оплаченными
-# оценками сохранится в кэше, а публикацию можно перезапустить отдельно, не вызывая Claude заново.
+# Сборка и публикация — отдельные задания: если публикация споткнётся, её можно перезапустить
+# отдельно, не вызывая Claude заново.
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # запись базы в ветку data
     env:
       TZ: Europe/Kyiv # время на странице и границы дня в архиве
     steps:
@@ -33,12 +35,25 @@ jobs:
           python-version: "3.11"
 
       # База хранит оценки, переводы и обзоры: без неё каждая сборка платила бы за всё заново,
-      # а архив и словарик обнулялись бы. Ключ с номером запуска — чтобы кэш сохранялся каждый раз.
+      # а архив и словарик обнулялись бы. Она лежит в ветке data этого репозитория.
       - name: Restore database
-        uses: actions/cache@v6
+        id: db
+        run: |
+          if git fetch --depth=1 origin data 2>/dev/null; then
+            git show FETCH_HEAD:finnews.db > finnews.db
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            ls -l finnews.db
+          else
+            echo "Ветки data ещё нет"
+          fi
+
+      # Переход со старого хранения: пока ветки data нет, берём базу из кэша прежних сборок.
+      - name: Restore database from old cache
+        if: steps.db.outputs.found != 'true'
+        uses: actions/cache/restore@v6
         with:
           path: finnews.db
-          key: finnews-db-${{ github.run_id }}
+          key: finnews-db-
           restore-keys: finnews-db-
 
       - name: Install
@@ -49,6 +64,24 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           WATCHLIST: ${{ vars.WATCHLIST || 'VOO,VT,AAPL' }}
+          # То же расписание, что в cron выше (UTC): по нему страница считает время до обновления.
+          FINNEWS_SCHEDULE: "05:00,12:00,16:00,21:30"
+
+      # Сразу после сборки, до выкладки: оплаченные оценки не теряются, даже если дальше что-то упадёт.
+      # В ветке всегда один коммит (перезаписывается), чтобы репозиторий не рос от копий базы.
+      - name: Save database
+        run: |
+          tmp="$(mktemp -d)"
+          cp finnews.db "$tmp/"
+          cd "$tmp"
+          git init -q -b data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add finnews.db
+          git commit -q -m "Database snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - uses: actions/configure-pages@v6
 

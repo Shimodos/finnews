@@ -44,6 +44,7 @@ class FakeClient:
             groups = [EventGroup(indexes=[*apple, 99]), EventGroup(indexes=[len(blocks) - 1])]
             return SimpleNamespace(stop_reason="end_turn", parsed_output=EventGroups(groups=groups))
         if kw["output_format"] is Brief:
+            self.brief_prompt = kw["messages"][0]["content"]
             text = BriefText(overview="Обзор <дня>", points=["Пункт"], term="ETF", term_explained="Фонд")
             brief = Brief(ru=text, uk=text.model_copy(update={"overview": "Огляд дня"}), en=text)
             return SimpleNamespace(stop_reason="end_turn", parsed_output=brief)
@@ -197,6 +198,7 @@ def fake_yahoo(symbol):
         "meta": {
             "symbol": symbol, "shortName": f"{symbol} <Inc>", "instrumentType": kind,
             "regularMarketPrice": price, "chartPreviousClose": 100.0, "regularMarketTime": 1795640400,
+            "currentTradingPeriod": {"regular": {"start": 1795617000, "end": 1795640400}},
         },
         "indicators": {"quote": [{"close": [100.0, None, 100.5, price]}]},
     }]}}
@@ -207,8 +209,9 @@ def test_market(tmp_path):
 
     from finnews import market, site
 
-    cfg = Config(db_path=str(tmp_path / "t.db"), watchlist=["AAPL"])
+    cfg = Config(db_path=str(tmp_path / "t.db"), watchlist=["AAPL"], schedule=["05:00", "21:30", "bad"])
     data = market.snapshot(cfg, get=fake_yahoo)
+    assert data["session"] == {"start": 1795617000, "end": 1795640400}
     assert data["pulse"] == ["^GSPC", "^IXIC", "^DJI", "AAPL"]
     assert "MSFT" not in data["quotes"]  # отказ по одному символу не мешает остальным
     assert data["quotes"]["^GSPC"]["name"] == "S&P 500"
@@ -226,7 +229,16 @@ def test_market(tmp_path):
     fed = conn.execute("SELECT id FROM articles WHERE title = 'Fed holds rates'").fetchone()["id"]
     db.save_score(conn, fed, 9, [], "", sector="macro")
     db.save_market(conn, json.dumps(data))
+
+    # обзор дня получает котировки, чтобы сверять с ними заголовки
+    client = FakeClient()
+    assert build_brief(cfg, conn, client=client)
+    assert "S&P 500: 101.00, за день +1.00%" in client.brief_prompt
+    assert "tech (XLK) -1.00%" in client.brief_prompt and "NVDA -5.00%" in client.brief_prompt
+
     page = site.render(cfg, conn)
+    assert 'id="hours" data-start="1795617000" data-end="1795640400"' in page  # часы торгов
+    assert 'id="next" data-schedule="05:00,21:30"' in page  # отсчёт; мусор из расписания отброшен
 
     pulse = page.split('class="market pulse"')[1].split("</section>")[0]
     assert pulse.count('class="quote"') == 4 and "<polyline" in pulse

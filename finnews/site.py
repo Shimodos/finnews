@@ -5,6 +5,7 @@ data-lang у <html>. Заголовок всегда ведёт на ориги�
 """
 
 import json
+import re
 from datetime import date, datetime, time, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -161,6 +162,8 @@ h1 .weekday { display: block; color: var(--muted); font-weight: 400; }
 }
 .market { margin: 48px 0 0; }
 .market h2 .asof { color: var(--muted); font-weight: 400; }
+.hours { margin: 12px 0 0; color: var(--muted); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
+.hours:empty { display: none; }
 .quotes {
   display: grid; grid-auto-flow: column; gap: 0 28px;
   grid-auto-columns: max(140px, calc((100% - 84px) / 4));
@@ -272,10 +275,78 @@ for (const [attr, key] of [['sort', 'sort'], ['group', 'group']]) {
     apply();
   }));
 }
+// Статус биржи США и отсчёт до следующего обновления считаются в браузере, по часам читателя.
+const T = {
+  ru: { open: 'Биржа США открыта · закроется в {t}', closed: 'Биржа США закрыта · откроется: {d}, {t}',
+        next: ' · следующее обновление через ~{t}', h: 'ч', m: 'мин' },
+  uk: { open: 'Біржа США відкрита · закриється о {t}', closed: 'Біржа США закрита · відкриється: {d}, {t}',
+        next: ' · наступне оновлення через ~{t}', h: 'год', m: 'хв' },
+  en: { open: 'US market is open · closes at {t}', closed: 'US market is closed · opens {d}, {t}',
+        next: ' · next update in ~{t}', h: 'h', m: 'min' },
+};
+const hoursEl = document.getElementById('hours');
+const nextEl = document.getElementById('next');
+const NY = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York', weekday: 'short', year: 'numeric', month: 'numeric',
+  day: 'numeric', hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
+});
+function nyParts(ms) {
+  const p = {};
+  NY.formatToParts(new Date(ms)).forEach(x => { p[x.type] = x.value; });
+  return p;
+}
+// Момент, когда в Нью-Йорке в этот календарный день 9:30 — обычное открытие биржи.
+function nyOpen(ms) {
+  const p = nyParts(ms);
+  const guess = Date.UTC(+p.year, p.month - 1, +p.day, 9, 30);
+  const g = nyParts(guess);
+  return guess - (Date.UTC(+g.year, g.month - 1, +g.day, +g.hour, +g.minute) - guess);
+}
+// Ближайшее открытие по обычному расписанию (будни); праздники биржи не учитываются.
+function nextOpen(now) {
+  for (let d = 0; d < 8; d++) {
+    const t = nyOpen(now + d * 864e5);
+    const day = nyParts(t).weekday;
+    if (t > now && day !== 'Sat' && day !== 'Sun') return t;
+  }
+  return null;
+}
+function tick() {
+  const lang = root.dataset.lang, L = T[lang] || T.en, now = Date.now();
+  const time = ms => new Date(ms).toLocaleTimeString(lang, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  if (hoursEl) {
+    const start = hoursEl.dataset.start * 1000, end = hoursEl.dataset.end * 1000;
+    if (now >= start && now < end) {
+      hoursEl.textContent = L.open.replace('{t}', time(end));
+    } else {
+      const open = now < start ? start : nextOpen(now);
+      hoursEl.textContent = open ? L.closed
+        .replace('{d}', new Date(open).toLocaleDateString(lang, { weekday: 'long' }))
+        .replace('{t}', time(open)) : '';
+    }
+  }
+  if (nextEl) {
+    const d = new Date(now);
+    let best = Infinity;
+    for (let add = 0; add < 2; add++) {
+      for (const slot of nextEl.dataset.schedule.split(',')) {
+        const [h, m] = slot.split(':').map(Number);
+        const t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + add, h, m);
+        if (t > now && t < best) best = t;
+      }
+    }
+    const mins = Math.max(1, Math.round((best - now) / 6e4));
+    const hh = Math.floor(mins / 60);
+    nextEl.textContent = L.next.replace('{t}', (hh ? hh + ' ' + L.h + ' ' : '') + (mins % 60) + ' ' + L.m);
+  }
+}
+setInterval(tick, 30000);
+
 const langs = document.querySelectorAll('[data-setlang]');
 function setLang(l) {
   root.dataset.lang = l;
   root.lang = l;
+  tick();
   langs.forEach(b => b.setAttribute('aria-pressed', b.dataset.setlang === l));
   try { localStorage.setItem('finnews-lang', l); } catch (e) {}
 }
@@ -456,8 +527,15 @@ def _pulse(data: dict) -> str:
         f'{_spark(q.get("points") or [], q["prev"], q["change"])}</div>'
         for s, q in ((s, quotes[s]) for s in symbols)
     )
+    # Открыта ли биржа и когда откроется или закроется, дописывает скрипт — по часам читателя.
+    session = data.get("session") or {}
+    hours = (
+        f'<p class="hours" id="hours" data-start="{int(session["start"])}" data-end="{int(session["end"])}"></p>'
+        if session.get("start") and session.get("end")
+        else ""
+    )
     return (
-        f'<section class="market pulse"><h2>{_ui("pulse")} {asof}</h2>'
+        f'<section class="market pulse"><h2>{_ui("pulse")} {asof}</h2>{hours}'
         f'<div class="quotes" tabindex="0">{cards}</div></section>'
     )
 
@@ -689,8 +767,11 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
     market = _loads(db.latest_market(conn, hours=hours))
     quotes = market.get("quotes") or {}
     quotes_note = f" {_ui('quotes_note')}" if quotes else ""
+    # Отсчёт до следующей сборки: расписание (UTC) задаётся там же, где она запускается.
+    slots = [t for t in cfg.schedule if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t)]
+    countdown = f'<span id="next" data-schedule="{",".join(slots)}"></span>' if slots else ""
     content = f"""{_heading(today)}
-<p class="stat">{stat}</p>
+<p class="stat">{stat}{countdown}</p>
 {note}
 {_pulse(market)}
 {_brief(_loads(db.latest_brief(conn, hours=hours)))}
