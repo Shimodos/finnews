@@ -189,6 +189,44 @@ def test_events(tmp_path):
     assert site.render(cfg, conn).count("<article") == 3
 
 
+def test_earnings(tmp_path):
+    import json
+    from datetime import date
+
+    from finnews import earnings, site
+
+    def fake_nasdaq(day):
+        if day == "2026-12-01":
+            raise RuntimeError("нет ответа")  # отказ по одному дню не мешает остальным
+        if day != "2026-12-02":
+            return {"data": {"rows": None}}
+        return {"data": {"rows": [
+            {"symbol": "SMALL", "name": "Small Co", "time": "time-pre-market",
+             "marketCap": "$900,000,000", "epsForecast": "$1.00"},
+            {"symbol": "CRM", "name": "Salesforce <Inc>", "time": "time-after-hours",
+             "marketCap": "$159,052,972,000", "epsForecast": "$2.41"},
+            {"symbol": "SNOW", "name": "Snowflake Inc.", "time": "time-not-supplied",
+             "marketCap": "$95,640,551,000", "epsForecast": "($0.32)"},
+            {"symbol": "VOO", "name": "Watched", "time": "", "marketCap": "N/A", "epsForecast": ""},
+        ]}}
+
+    cfg = Config(db_path=str(tmp_path / "t.db"), watchlist=["VOO"])
+    days = earnings.upcoming(cfg, today=date(2026, 11, 27), get=fake_nasdaq)
+    assert [d["date"] for d in days] == ["2026-12-02"]  # выходные и пустые дни опущены
+    items = {i["symbol"]: i for i in days[0]["items"]}
+    assert set(items) == {"CRM", "SNOW", "VOO"}  # мелкая компания отсеяна, тикер из списка оставлен
+    assert items["CRM"]["when"] == "after" and items["CRM"]["eps"] == 2.41
+    assert items["SNOW"]["eps"] == -0.32 and items["VOO"]["eps"] is None
+
+    conn = db.connect(cfg.db_path)
+    db.save_market(conn, json.dumps({"quotes": {}, "earnings": days}))
+    page = site.render(cfg, conn)
+    block = page.split('class="market earnings"')[1].split("</section>")[0]
+    assert "среда, 2 декабря" in block and "Wednesday, December 2" in block
+    assert "Salesforce &lt;Inc&gt;" in block and "после закрытия" in block
+    assert "прогноз прибыли на акцию</span>" in block and ": $2.41" in block and ": −$0.32" in block
+
+
 def fake_yahoo(symbol):
     """Ответ в формате эндпоинта графиков Yahoo; для одного символа — отказ."""
     if symbol == "MSFT":

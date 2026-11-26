@@ -80,6 +80,18 @@ UI = {
     ),
     "pulse": ("Пульс рынка", "Пульс ринку", "Market pulse"),
     "movers": ("Кто двигался и почему", "Хто рухався і чому", "Who moved and why"),
+    "earnings": ("Календарь отчётов", "Календар звітів", "Earnings calendar"),
+    "earnings_note": (
+        "Отчёт — день, когда компания раскрывает результаты квартала. В такие дни её акции "
+        "часто движутся сильнее обычного.",
+        "Звіт — день, коли компанія розкриває результати кварталу. У такі дні її акції "
+        "часто рухаються сильніше, ніж зазвичай.",
+        "An earnings report is the day a company publishes its quarterly results. Its shares "
+        "often move more than usual on that day.",
+    ),
+    "before": ("до открытия биржи", "до відкриття біржі", "before the open"),
+    "after": ("после закрытия", "після закриття", "after the close"),
+    "eps": ("прогноз прибыли на акцию", "прогноз прибутку на акцію", "EPS forecast"),
     "no_story": (
         "в ленте новостей об этом нет",
         "у стрічці новин про це немає",
@@ -203,6 +215,13 @@ h1 .weekday { display: block; color: var(--muted); font-weight: 400; }
 .mover .because a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
 .mover .because a:hover { color: var(--text); text-decoration-color: var(--accent); }
 nav .chg { margin-left: 5px; }
+.earnings .lead { margin: 14px 0 0; font-size: 15px; color: var(--muted); }
+.earnings .when-day {
+  margin: 22px 0 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); color: var(--muted);
+  font: 400 12px var(--mono); letter-spacing: 0.02em;
+}
+.earnings .pct { color: var(--muted); }
+.earnings .because:empty { display: none; }
 .brief .overview { font-size: 21px; line-height: 1.4; letter-spacing: -0.01em; margin: 20px 0 0; text-wrap: pretty; }
 .brief ul { margin: 20px 0 0; padding: 0; list-style: none; }
 .brief li { padding: 10px 0 10px 20px; border-top: 1px solid var(--line); position: relative; }
@@ -613,6 +632,38 @@ def _movers(data: dict, rows, count: int = 3) -> str:
     return f'<section class="market movers"><h2>{_ui("movers")}</h2>{"".join(items)}</section>'
 
 
+def _earnings(data: dict) -> str:
+    """Календарь отчётов на ближайшие дни: кто, когда и какой прибыли ждут аналитики."""
+    blocks = []
+    for entry in data.get("earnings") or []:
+        try:
+            day = date.fromisoformat(entry["date"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        label = _tr([f"{WEEKDAYS[lang][day.weekday()]}, {d}" for lang, d in zip(LANGS, _date(day))])
+        rows = []
+        for item in entry.get("items") or []:
+            eps = item.get("eps")
+            forecast = (
+                f'{_ui("eps")}: {"−" if eps < 0 else ""}${abs(eps):.2f}' if isinstance(eps, (int, float)) else ""
+            )
+            when = _ui(item["when"]) if item.get("when") in ("before", "after") else ""
+            rows.append(
+                f'<div class="mover"><span class="sym">{escape(str(item.get("symbol", "")))}</span>'
+                f'<span class="co">{escape(str(item.get("name", "")))}</span>'
+                f'<span class="pct">{when}</span>'
+                f'<p class="because">{forecast}</p></div>'
+            )
+        if rows:
+            blocks.append(f'<h3 class="when-day">{label}</h3>{"".join(rows)}')
+    if not blocks:
+        return ""
+    return (
+        f'<section class="market earnings"><h2>{_ui("earnings")}</h2>'
+        f'{_ui("earnings_note", "p", "lead")}{"".join(blocks)}</section>'
+    )
+
+
 def _controls(rows, by_sector: bool, any_scored: bool, quotes: dict) -> str:
     navs = []
     if any_scored:
@@ -819,6 +870,7 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
 {_pulse(market)}
 {_brief(_loads(db.latest_brief(conn, hours=hours)))}
 {_movers(market, rows)}
+{_earnings(market)}
 {_feed(cfg, rows, today, quotes)}
 <footer>{_ui("disclaimer")}{quotes_note}</footer>"""
     return _shell(_date(today)[2], content)

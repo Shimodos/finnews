@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 
-from . import db, market, site, telegram
+from . import db, earnings, market, site, telegram
 from .collect import collect
 from .config import load_config, yahoo_ticker_feed
 from .llm import build_brief, build_digest, group_events, score_articles
@@ -62,9 +62,11 @@ def cmd_prices(cfg, conn, args) -> dict:
     if not data["quotes"]:
         print("Котировки недоступны — страница соберётся без них.")
         return data
+    data["earnings"] = earnings.upcoming(cfg)
     db.save_market(conn, json.dumps(data, ensure_ascii=False))
     conn.commit()
     print(f"Котировок получено: {len(data['quotes'])}")
+    print(f"Отчётов в календаре: {sum(len(d['items']) for d in data['earnings'])}")
     return data
 
 
