@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS articles (
     digested_at TEXT,
     sector      TEXT NOT NULL DEFAULT '',
     tone        TEXT NOT NULL DEFAULT '',
-    i18n        TEXT NOT NULL DEFAULT ''
+    i18n        TEXT NOT NULL DEFAULT '',
+    event       INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published);
 CREATE TABLE IF NOT EXISTS briefs (
@@ -37,6 +38,7 @@ MIGRATIONS = {
     "sector": "ALTER TABLE articles ADD COLUMN sector TEXT NOT NULL DEFAULT ''",
     "tone": "ALTER TABLE articles ADD COLUMN tone TEXT NOT NULL DEFAULT ''",
     "i18n": "ALTER TABLE articles ADD COLUMN i18n TEXT NOT NULL DEFAULT ''",
+    "event": "ALTER TABLE articles ADD COLUMN event INTEGER",
 }
 
 
@@ -110,6 +112,30 @@ def latest_brief(conn, *, hours: int) -> str:
         "SELECT data FROM briefs WHERE created_at >= ? ORDER BY created_at DESC LIMIT 1", (since,)
     ).fetchone()
     return row["data"] if row else ""
+
+
+def set_events(conn, groups: list[list[int]], *, hours: int) -> None:
+    """Записывает группы новостей об одном событии; первый id в группе — главная новость.
+
+    У всех новостей группы в колонке event стоит id главной. Прежняя разметка за это
+    время стирается: группы каждый раз считаются заново.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    conn.execute("UPDATE articles SET event = NULL WHERE published >= ?", (since,))
+    for group in groups:
+        conn.executemany("UPDATE articles SET event = ? WHERE id = ?", [(group[0], i) for i in group])
+
+
+def all_briefs(conn) -> list[sqlite3.Row]:
+    return conn.execute("SELECT day, data FROM briefs ORDER BY day DESC").fetchall()
+
+
+def between(conn, start: str, end: str) -> list[sqlite3.Row]:
+    """Статьи, опубликованные в промежутке [start, end) — время в UTC, как в базе."""
+    return conn.execute(
+        "SELECT * FROM articles WHERE published >= ? AND published < ? ORDER BY published DESC",
+        (start, end),
+    ).fetchall()
 
 
 def save_market(conn, data: str) -> None:

@@ -5,16 +5,18 @@ data-lang у <html>. Заголовок всегда ведёт на ориги�
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from html import escape
 from pathlib import Path
 
 from . import db
 from .config import Config
 from .market import SECTOR_SYMBOLS
+from .market import movers as top_movers
 
 LANGS = ("ru", "uk", "en")
 STORY_MIN_SCORE = 4  # новости с оценкой 0-3 — шум, движение акции ими не объясняем
+PAGES = (("archive.html", "nav_archive"), ("glossary.html", "nav_glossary"))  # ссылки в шапке
 
 MONTHS = {
     "ru": ["января", "февраля", "марта", "апреля", "мая", "июня",
@@ -55,6 +57,19 @@ UI = {
     "brief": ("Главное за день", "Головне за день", "Today in brief"),
     "term": ("Термин дня", "Термін дня", "Term of the day"),
     "score": ("важность", "важливість", "importance"),
+    "also": ("Ещё об этом:", "Ще про це:", "More on this:"),
+    "nav_archive": ("Архив", "Архів", "Archive"),
+    "nav_glossary": ("Словарик", "Словничок", "Glossary"),
+    "no_archive": (
+        "Архив появится после первого обзора дня.",
+        "Архів з'явиться після першого огляду дня.",
+        "The archive appears after the first daily brief.",
+    ),
+    "no_glossary": (
+        "Термины появятся после первого обзора дня.",
+        "Терміни з'являться після першого огляду дня.",
+        "Terms appear after the first daily brief.",
+    ),
     "pulse": ("Пульс рынка", "Пульс ринку", "Market pulse"),
     "movers": ("Кто двигался и почему", "Хто рухався і чому", "Who moved and why"),
     "no_story": (
@@ -108,12 +123,24 @@ body {
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }
 main { max-width: 720px; margin: 0 auto; padding: 56px 20px 96px; }
-.mark, .stat, nav button, .day h2, .brief h2, .market h2, time, .meta, .term b, footer,
+.mark, .stat, nav button, .links a, .entry .when, .day h2, .brief h2, .market h2, time, .meta, .term b, footer,
 .quote .name, .quote .chg, .mover .sym, .mover .pct {
   font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em;
 }
-.top { display: flex; justify-content: space-between; align-items: center; margin: 0 0 44px; }
-.mark { color: var(--accent); margin: 0; }
+.top { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: center; margin: 0 0 44px; }
+.mark { margin: 0; }
+.mark a { color: var(--accent); text-decoration: none; }
+.links { margin-right: auto; }
+.links a { color: var(--muted); text-decoration: none; padding: 4px 0; }
+.links a:hover { color: var(--text); }
+.entry {
+  display: grid; grid-template-columns: 1fr; gap: 6px; padding: 20px 0;
+  border-bottom: 1px solid var(--line); color: inherit; text-decoration: none;
+}
+h1 + .entry { margin-top: 40px; border-top: 1px solid var(--text); }
+.entry .term-name { font-size: 18px; font-weight: 500; }
+.entry .what { color: var(--muted); font-size: 15px; }
+a.entry:hover .what { color: var(--text); }
 nav { display: flex; flex-wrap: wrap; gap: 6px 18px; }
 nav button {
   appearance: none; background: none; border: 0; padding: 4px 0; cursor: pointer;
@@ -191,6 +218,9 @@ h3 a:visited { color: var(--muted); }
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .meta { margin: 10px 0 0; color: var(--muted); }
+.also { margin: 6px 0 0; color: var(--muted); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
+.also a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
+.also a:hover { color: var(--text); text-decoration-color: var(--accent); }
 .meta b { font-weight: 500; color: var(--text); }
 .up { color: var(--up); } .down { color: var(--down); }
 .empty { margin: 56px 0 0; color: var(--muted); }
@@ -320,7 +350,8 @@ def _loads(text: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _article(row, min_score: int, group: str) -> str:
+def _article(row, min_score: int, group: str, also=()) -> str:
+    """Одна новость; also — другие заметки о том же событии, они идут ссылками под ней."""
     local = datetime.fromisoformat(row["published"]).astimezone()
     url = row["url"] if row["url"].startswith(("http://", "https://")) else "#"
     i18n = _loads(row["i18n"])
@@ -355,7 +386,16 @@ def _article(row, min_score: int, group: str) -> str:
         meta.append(arrow + _tr(TONES[row["tone"]]))
     if scored:
         meta.append(_ui("score") + f" {row['score']}/10")
-    parts.append(f'<p class="meta">{" · ".join(meta)}</p></div></article>')
+    parts.append(f'<p class="meta">{" · ".join(meta)}</p>')
+    links = [
+        f'<a href="{escape(r["url"])}" target="_blank" rel="noopener noreferrer"'
+        f' title="{escape(r["title"])}">{escape(r["source"])}</a>'
+        for r in also
+        if r["url"].startswith(("http://", "https://"))
+    ]
+    if links:
+        parts.append(f'<p class="also">{_ui("also")} {", ".join(links)}</p>')
+    parts.append("</div></article>")
     return "".join(parts)
 
 
@@ -427,10 +467,8 @@ def _pulse(data: dict) -> str:
 
 def _movers(data: dict, rows, count: int = 3) -> str:
     """Лидеры роста и падения среди крупных компаний и новость из ленты, которая это объясняет."""
-    stocks = [(s, q) for s, q in (data.get("quotes") or {}).items() if q.get("type") == "EQUITY"]
-    gainers = sorted((x for x in stocks if x[1]["change"] > 0), key=lambda x: -x[1]["change"])[:count]
-    losers = sorted((x for x in stocks if x[1]["change"] < 0), key=lambda x: x[1]["change"])[:count]
-    if not gainers and not losers:
+    symbols = top_movers(data, count)
+    if not symbols:
         return ""
     stories: dict = {}
     for row in rows:
@@ -441,7 +479,8 @@ def _movers(data: dict, rows, count: int = 3) -> str:
             if best is None or (row["score"] or 0) > (best["score"] or 0):
                 stories[ticker] = row
     items = []
-    for symbol, q in gainers + losers:
+    for symbol in symbols:
+        q = data["quotes"][symbol]
         row = stories.get(symbol)
         if row is not None and row["url"].startswith(("http://", "https://")):
             i18n = _loads(row["i18n"])
@@ -496,10 +535,19 @@ def _controls(rows, by_sector: bool, any_scored: bool, quotes: dict) -> str:
     return f'<div class="controls">{"".join(navs)}</div>' if navs else ""
 
 
-def render(cfg: Config, conn, *, hours: int = 24) -> str:
-    rows = db.recent(conn, hours=hours)
-    now = datetime.now().astimezone()
-    today = now.date()
+def _feed(cfg: Config, rows, today, quotes: dict) -> str:
+    """Сортировка, фильтр и лента новостей по дням."""
+    if not rows:
+        return _ui("empty", "p", "empty")
+    # Повторы одного события: показываем главную новость, остальные — ссылками под ней.
+    ids = {r["id"] for r in rows}
+    also: dict = {}
+    for row in rows:
+        if row["event"] and row["event"] != row["id"] and row["event"] in ids:
+            also.setdefault(row["event"], []).append(row)
+    repeats = {r["id"] for group_rows in also.values() for r in group_rows}
+    rows = [r for r in rows if r["id"] not in repeats]
+
     any_scored = any(r["score"] is not None for r in rows)
     by_sector = any(r["sector"] in SECTORS for r in rows)
 
@@ -510,15 +558,126 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
     for row in rows:
         day = datetime.fromisoformat(row["published"]).astimezone().date()
         days.setdefault(day, []).append(row)
+    body = "".join(
+        f'<section class="day"><h2>{_day_label(day, today)}</h2>'
+        f'{"".join(_article(r, cfg.min_score, group(r), also.get(r["id"], ())) for r in items)}</section>'
+        for day, items in days.items()
+    ) + f'<section class="day" id="flat" hidden><h2>{_ui("by_score")}</h2></section>'
+    return _controls(rows, by_sector, any_scored, quotes) + body
 
-    if rows:
-        body = "".join(
-            f'<section class="day"><h2>{_day_label(day, today)}</h2>'
-            f'{"".join(_article(r, cfg.min_score, group(r)) for r in items)}</section>'
-            for day, items in days.items()
-        ) + f'<section class="day" id="flat" hidden><h2>{_ui("by_score")}</h2></section>'
-    else:
-        body = _ui("empty", "p", "empty")
+
+def _shell(title: str, content: str) -> str:
+    """Общая обвязка страниц: шапка со ссылками и языками, шрифты, стили, скрипт."""
+    langs = "".join(
+        f'<button type="button" data-setlang="{lang}" aria-pressed="{str(lang == "ru").lower()}">{lang}</button>'
+        for lang in LANGS
+    )
+    links = "".join(f'<a href="{href}">{_ui(key)}</a>' for href, key in PAGES)
+    return f"""<!doctype html>
+<html lang="ru" data-lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>finnews — {escape(title)}</title>
+<script>{HEAD_JS}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>{CSS}</style>
+</head>
+<body>
+<main>
+<div class="top"><p class="mark"><a href="index.html">finnews</a></p>
+<nav class="links" aria-label="pages">{links}</nav>
+<nav class="langs" aria-label="language">{langs}</nav></div>
+{content}
+</main>
+<script>{JS}</script>
+</body>
+</html>
+"""
+
+
+def _count(n: int) -> list[str]:
+    return [
+        f"{n} {_plural(n, 'новость', 'новости', 'новостей')}",
+        f"{n} {_plural(n, 'новина', 'новини', 'новин')}",
+        f"{n} {'story' if n == 1 else 'stories'}",
+    ]
+
+
+def _heading(day) -> str:
+    weekday = _tr([escape(WEEKDAYS[lang][day.weekday()]) for lang in LANGS], "span", "weekday")
+    return f"<h1>{_tr(_date(day))}{weekday}</h1>"
+
+
+def _brief_days(conn) -> list:
+    """(дата, обзор) по всем дням, за которые есть обзор; свежие первыми."""
+    result = []
+    for row in db.all_briefs(conn):
+        try:
+            day = date.fromisoformat(row["day"])
+        except ValueError:
+            continue
+        data = _loads(row["data"])
+        if all(isinstance(data.get(lang), dict) for lang in LANGS):
+            result.append((day, data))
+    return result
+
+
+def render_day(cfg: Config, conn, day, brief: dict) -> str:
+    """Страница архива: обзор и новости одного дня (по местному времени)."""
+    start = datetime.combine(day, time.min).astimezone()
+    rows = db.between(
+        conn,
+        start.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        (start + timedelta(days=1)).astimezone(timezone.utc).isoformat(timespec="seconds"),
+    )
+    content = (
+        f'{_heading(day)}<p class="stat">{_tr(_count(len(rows)))}</p>{_brief(brief)}'
+        f'{_feed(cfg, rows, datetime.now().astimezone().date(), {})}'
+        f'<footer>{_ui("disclaimer")}</footer>'
+    )
+    return _shell(_date(day)[0], content)
+
+
+def render_archive(conn) -> str:
+    entries = "".join(
+        f'<a class="entry" href="day-{day.isoformat()}.html"><span class="when">'
+        + _tr([f"{d}, {escape(WEEKDAYS[lang][day.weekday()])}" for lang, d in zip(LANGS, _date(day))])
+        + "</span>"
+        + _tr([escape(str(data[lang].get("overview", ""))) for lang in LANGS], "span", "what")
+        + "</a>"
+        for day, data in _brief_days(conn)
+    )
+    content = f'<h1>{_ui("nav_archive")}</h1>{entries or _ui("no_archive", "p", "empty")}'
+    return _shell(UI["nav_archive"][0], content + f'<footer>{_ui("disclaimer")}</footer>')
+
+
+def render_glossary(conn) -> str:
+    """Все «термины дня» из обзоров; повтор термина показывается один раз, самый свежий."""
+    seen, entries = set(), []
+    for day, data in _brief_days(conn):
+        key = str(data["en"].get("term", "")).strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        entries.append(
+            '<div class="entry"><span class="when">' + _tr(_date(day)) + "</span>"
+            + _tr([escape(str(data[lang].get("term", ""))) for lang in LANGS], "strong", "term-name")
+            + _tr([escape(str(data[lang].get("term_explained", ""))) for lang in LANGS], "span", "what")
+            + "</div>"
+        )
+    content = f'<h1>{_ui("nav_glossary")}</h1>{"".join(entries) or _ui("no_glossary", "p", "empty")}'
+    return _shell(UI["nav_glossary"][0], content + f'<footer>{_ui("disclaimer")}</footer>')
+
+
+def render(cfg: Config, conn, *, hours: int = 24) -> str:
+    rows = db.recent(conn, hours=hours)
+    now = datetime.now().astimezone()
+    today = now.date()
+    any_scored = any(r["score"] is not None for r in rows)
 
     n = len(rows)
     stat = _tr([
@@ -529,50 +688,29 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
         f"{n} {'story' if n == 1 else 'stories'} in {hours} "
         f"{'hour' if hours == 1 else 'hours'} · updated {now:%H:%M}",
     ])
-    weekday = _tr([escape(WEEKDAYS[lang][today.weekday()]) for lang in LANGS], "span", "weekday")
-    langs = "".join(
-        f'<button type="button" data-setlang="{lang}" aria-pressed="{str(lang == "ru").lower()}">{lang}</button>'
-        for lang in LANGS
-    )
     note = "" if any_scored else _ui("no_ai", "p", "note")
     market = _loads(db.latest_market(conn, hours=hours))
     quotes = market.get("quotes") or {}
     quotes_note = f" {_ui('quotes_note')}" if quotes else ""
-    return f"""<!doctype html>
-<html lang="ru" data-lang="ru">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>finnews — {_date(today)[0]}</title>
-<script>{HEAD_JS}</script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<style>{CSS}</style>
-</head>
-<body>
-<main>
-<div class="top"><p class="mark">finnews</p><nav class="langs" aria-label="language">{langs}</nav></div>
-<h1>{_tr(_date(today))}{weekday}</h1>
+    content = f"""{_heading(today)}
 <p class="stat">{stat}</p>
 {note}
 {_pulse(market)}
 {_brief(_loads(db.latest_brief(conn, hours=hours)))}
 {_movers(market, rows)}
-{_controls(rows, by_sector, any_scored, quotes)}
-{body}
-<footer>{_ui("disclaimer")}{quotes_note}</footer>
-</main>
-<script>{JS}</script>
-</body>
-</html>
-"""
+{_feed(cfg, rows, today, quotes)}
+<footer>{_ui("disclaimer")}{quotes_note}</footer>"""
+    return _shell(_date(today)[0], content)
 
 
 def build(cfg: Config, conn, *, hours: int = 24, out_dir: str = "site") -> Path:
+    """Пишет главную, архив по дням и словарик. Возвращает путь к главной."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     path = out / "index.html"
     path.write_text(render(cfg, conn, hours=hours), encoding="utf-8")
+    (out / "archive.html").write_text(render_archive(conn), encoding="utf-8")
+    (out / "glossary.html").write_text(render_glossary(conn), encoding="utf-8")
+    for day, brief in _brief_days(conn):
+        (out / f"day-{day.isoformat()}.html").write_text(render_day(cfg, conn, day, brief), encoding="utf-8")
     return path

@@ -54,6 +54,19 @@ BRIEF_SYSTEM = """Ты объясняешь начинающему инвест�
 Правила: простой язык; не давай советов покупать или продавать конкретные бумаги; \
 названия компаний и тикеры не переводи."""
 
+EVENTS_SYSTEM = """Тебе дают пронумерованный список заголовков финансовых новостей за сутки. \
+Найди новости об одном и том же событии: одно заявление, один отчёт, одно решение, одна сделка, \
+пересказанные разными источниками или в нескольких заметках.
+
+Новости на общую тему, но о разных событиях, не объединяй: два разных выступления \
+представителей ФРС — это два события. Сомневаешься — не объединяй.
+
+Верни только группы из двух и более новостей — номера index. Каждая новость входит \
+максимум в одну группу. Если повторов нет, верни пустой список."""
+
+EVENTS_MIN_SCORE = 4  # шум (0-3) не склеиваем: он и так внизу ленты
+EVENTS_LIMIT = 80
+
 DIGEST_SYSTEM = """Ты пишешь ежедневный дайджест финансовых новостей на русском языке \
 для начинающего инвестора. Он только начинает покупать ценные бумаги и хочет понимать, \
 что происходит на рынке и почему это важно, а не получать торговые сигналы.
@@ -116,6 +129,14 @@ class Brief(BaseModel):
     en: BriefText
 
 
+class EventGroup(BaseModel):
+    indexes: list[int]
+
+
+class EventGroups(BaseModel):
+    groups: list[EventGroup]
+
+
 def _text(response) -> str:
     return "".join(b.text for b in response.content if b.type == "text").strip()
 
@@ -172,6 +193,41 @@ def score_articles(cfg: Config, conn, client: anthropic.Anthropic | None = None)
                 done += 1
         conn.commit()
     return done
+
+
+def group_events(
+    cfg: Config, conn, *, hours: int = 24, client: anthropic.Anthropic | None = None
+) -> int:
+    """Находит новости об одном событии и склеивает их. Возвращает число групп."""
+    rows = db.top_recent(conn, min_score=EVENTS_MIN_SCORE, hours=hours, limit=EVENTS_LIMIT)
+    if len(rows) < 2:
+        return 0
+    client = client or anthropic.Anthropic()
+    listing = "\n\n".join(
+        f"index: {i}\nисточник: {r['source']}\nзаголовок: {r['title']}" for i, r in enumerate(rows)
+    )
+    response = client.messages.parse(
+        model=cfg.score_model,
+        max_tokens=16000,
+        output_config={"effort": "low"},
+        system=EVENTS_SYSTEM,
+        messages=[{"role": "user", "content": f"Новости:\n\n{listing}"}],
+        output_format=EventGroups,
+    )
+    if response.stop_reason != "end_turn" or response.parsed_output is None:
+        log.warning("Повторы не склеены (stop_reason=%s)", response.stop_reason)
+        return 0
+    used: set[int] = set()
+    groups: list[list[int]] = []
+    for group in response.parsed_output.groups:
+        # rows уже отсортированы по важности и свежести: меньший index — главная новость
+        indexes = sorted({i for i in group.indexes if 0 <= i < len(rows) and i not in used})
+        if len(indexes) >= 2:
+            used.update(indexes)
+            groups.append([rows[i]["id"] for i in indexes])
+    db.set_events(conn, groups, hours=hours)
+    conn.commit()
+    return len(groups)
 
 
 def build_brief(

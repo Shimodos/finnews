@@ -71,6 +71,14 @@ def parse(result: dict, *, with_points: bool) -> dict | None:
     return item
 
 
+def movers(data: dict, count: int = 3) -> list[str]:
+    """Символы лидеров дня среди акций: сначала выросшие сильнее всех, затем упавшие."""
+    stocks = [(s, q["change"]) for s, q in (data.get("quotes") or {}).items() if q.get("type") == "EQUITY"]
+    gainers = sorted((x for x in stocks if x[1] > 0), key=lambda x: -x[1])[:count]
+    losers = sorted((x for x in stocks if x[1] < 0), key=lambda x: x[1])[:count]
+    return [s for s, _ in gainers + losers]
+
+
 def _http_get(symbol: str) -> dict:
     response = httpx.get(
         URL.format(symbol=quote(symbol)),

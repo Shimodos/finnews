@@ -3,7 +3,10 @@ from types import SimpleNamespace
 from finnews import db
 from finnews.collect import clean, is_duplicate, title_key
 from finnews.config import Config
-from finnews.llm import Brief, BriefText, Score, ScoreBatch, build_brief, build_digest, score_articles
+from finnews.llm import (
+    Brief, BriefText, EventGroup, EventGroups, Score, ScoreBatch,
+    build_brief, build_digest, group_events, score_articles,
+)
 from finnews.telegram import split_message
 
 
@@ -35,6 +38,11 @@ class FakeClient:
 
     def _parse(self, **kw):
         blocks = kw["messages"][0]["content"].split("index: ")[1:]
+        if kw["output_format"] is EventGroups:
+            # склеивает всё про Apple; index 99 и одиночная группа должны отсеяться
+            apple = [i for i, block in enumerate(blocks) if "Apple" in block]
+            groups = [EventGroup(indexes=[*apple, 99]), EventGroup(indexes=[len(blocks) - 1])]
+            return SimpleNamespace(stop_reason="end_turn", parsed_output=EventGroups(groups=groups))
         if kw["output_format"] is Brief:
             text = BriefText(overview="Обзор <дня>", points=["Пункт"], term="ETF", term_explained="Фонд")
             brief = Brief(ru=text, uk=text.model_copy(update={"overview": "Огляд дня"}), en=text)
@@ -134,6 +142,49 @@ def test_site_translated(tmp_path):
     # обзор дня: экранирован и на своём языке
     assert "Обзор &lt;дня&gt;" in page and "Огляд дня" in page
     assert 'class="market' not in page  # без котировок блоков рынка нет
+
+    # архив и словарик: по странице на каждый день с обзором
+    out = tmp_path / "site"
+    site.build(cfg, conn, out_dir=str(out))
+    days =[p.name for p in out.glob("day-*.html")]
+    assert len(days) == 1
+    archive = (out / "archive.html").read_text(encoding="utf-8")
+    assert f'href="{days[0]}"' in archive and "Огляд дня" in archive
+    glossary = (out / "glossary.html").read_text(encoding="utf-8")
+    assert "ETF" in glossary and "Фонд" in glossary
+    day_page = (out / days[0]).read_text(encoding="utf-8")
+    assert "Обзор &lt;дня&gt;" in day_page and "Заголовок по-русски" in day_page
+    assert 'href="archive.html"' in page and 'href="glossary.html"' in page
+
+
+def test_events(tmp_path):
+    from finnews import site
+
+    cfg = Config(db_path=str(tmp_path / "t.db"))
+    conn = db.connect(cfg.db_path)
+    for i, (title, source) in enumerate([
+        ("Apple beats earnings", "CNBC"),
+        ("Apple tops profit forecasts", "MarketWatch"),
+        ("Apple results lift suppliers", "Yahoo"),
+    ]):
+        db.insert_article(
+            conn, url=f"https://example.com/{i}", title=title, title_key=title_key(title),
+            summary="", source=source, published=db.now_iso(),
+        )
+    client = FakeClient()
+    assert score_articles(cfg, conn, client=client) == 3
+    assert group_events(cfg, conn, client=client) == 1
+    lead = {r["event"] for r in conn.execute("SELECT event FROM articles")}
+    assert len(lead) == 1 and None not in lead  # все три — одно событие с одной главной новостью
+
+    page = site.render(cfg, conn)
+    assert page.count("<article") == 1  # повторы не идут отдельными новостями
+    also = page.split('class="also"')[1].split("</p>")[0]
+    assert also.count("<a ") == 2 and "Ещё об этом:" in also
+    assert "3 новости за 24 часа" in page  # счётчик показывает все заметки
+
+    db.set_events(conn, [], hours=24)  # разметка стирается при следующем пересчёте
+    assert site.render(cfg, conn).count("<article") == 3
 
 
 def fake_yahoo(symbol):

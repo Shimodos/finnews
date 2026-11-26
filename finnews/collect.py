@@ -53,14 +53,18 @@ def fetch_feed(client: httpx.Client, url: str) -> list:
     return feedparser.parse(resp.content).entries
 
 
-def collect(cfg: Config, conn) -> dict[str, int]:
-    """Собирает все ленты. Возвращает {источник: число новых статей}; -1 — лента не ответила."""
+def collect(cfg: Config, conn, feeds: list[tuple[str, str]] | None = None) -> dict[str, int]:
+    """Собирает ленты (по умолчанию все из настроек).
+
+    Возвращает {источник: число новых статей}; -1 — лента не ответила.
+    """
+    feeds = cfg.feeds if feeds is None else feeds
     known = db.recent_title_keys(conn)
     stats: dict[str, int] = {}
     with httpx.Client(
         headers={"User-Agent": USER_AGENT}, timeout=20, follow_redirects=True
     ) as client:
-        for source, url in cfg.feeds:
+        for source, url in feeds:
             try:
                 entries = fetch_feed(client, url)
             except httpx.HTTPError as e:

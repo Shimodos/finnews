@@ -6,8 +6,8 @@ import sys
 
 from . import db, market, site, telegram
 from .collect import collect
-from .config import load_config
-from .llm import build_brief, build_digest, score_articles
+from .config import load_config, yahoo_ticker_feed
+from .llm import build_brief, build_digest, group_events, score_articles
 
 
 def cmd_collect(cfg, conn, args) -> None:
@@ -48,27 +48,37 @@ def cmd_site(cfg, conn, args) -> None:
     print(f"Страница собрана: {path.resolve()}")
 
 
+def cmd_events(cfg, conn, args) -> None:
+    print(f"Событий с повторами склеено: {group_events(cfg, conn, hours=args.hours)}")
+
+
 def cmd_brief(cfg, conn, args) -> None:
     done = build_brief(cfg, conn, hours=args.hours)
     print("Обзор дня готов." if done else "Нет новостей для обзора дня.")
 
 
-def cmd_prices(cfg, conn, args) -> None:
+def cmd_prices(cfg, conn, args) -> dict:
     data = market.snapshot(cfg)
     if not data["quotes"]:
         print("Котировки недоступны — страница соберётся без них.")
-        return
+        return data
     db.save_market(conn, json.dumps(data, ensure_ascii=False))
     conn.commit()
     print(f"Котировок получено: {len(data['quotes'])}")
+    return data
 
 
 def cmd_update(cfg, conn, args) -> None:
     """Всё для сайта: сбор, котировки, оценка с переводом, обзор дня, страница."""
     cmd_collect(cfg, conn, args)
-    cmd_prices(cfg, conn, args)
+    # Новости по лидерам дня — чтобы было чем объяснить их движение.
+    leaders = market.movers(cmd_prices(cfg, conn, args))
+    if leaders:
+        stats = collect(cfg, conn, feeds=[yahoo_ticker_feed(s) for s in leaders])
+        print(f"Новости по лидерам дня ({', '.join(leaders)}): +{sum(n for n in stats.values() if n > 0)}")
     if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
         cmd_score(cfg, conn, args)
+        cmd_events(cfg, conn, args)
         cmd_brief(cfg, conn, args)
     else:
         print("ANTHROPIC_API_KEY не задан — пропускаю оценку, перевод и обзор дня.")
@@ -99,12 +109,16 @@ def main() -> None:
         p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")
         p.add_argument("--dry-run", action="store_true", help="вывести в консоль, не отправлять")
         p.set_defaults(func=func)
-    p = sub.add_parser("brief", help="написать обзор дня на трёх языках")
-    p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")
-    p.set_defaults(func=cmd_brief)
+    for name, func, help_ in (
+        ("brief", cmd_brief, "написать обзор дня на трёх языках"),
+        ("events", cmd_events, "склеить новости об одном событии"),
+    ):
+        p = sub.add_parser(name, help=help_)
+        p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")
+        p.set_defaults(func=func)
     for name, func, help_ in (
         ("site", cmd_site, "собрать веб-страницу с новостями"),
-        ("update", cmd_update, "всё для сайта: collect + prices + score + brief + site"),
+        ("update", cmd_update, "всё для сайта: collect + prices + score + events + brief + site"),
     ):
         p = sub.add_parser(name, help=help_)
         p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")
