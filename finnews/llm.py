@@ -6,7 +6,7 @@ from typing import Literal
 import anthropic
 from pydantic import BaseModel
 
-from . import db, market
+from . import db, macro, market
 from .config import Config
 
 log = logging.getLogger(__name__)
@@ -57,6 +57,10 @@ BRIEF_SYSTEM = """Ты объясняешь начинающему инвест�
 (неделя, месяц, от максимума) — тогда либо прямо назови этот период, либо не приводи цифру;
 - не пиши, что рынок вырос или упал, если котировки показывают обратное;
 - если последняя сессия была не сегодня (выходной или праздник), скажи об этом.
+
+Могут идти и показатели экономики (ставки, инфляция, безработица) — это официальная статистика. \
+Опирайся на неё, когда объясняешь новости о ставках и ценах, но не выдавай давно известную \
+цифру за событие дня.
 
 Верни один и тот же обзор на трёх языках — ru (русский), uk (украинский), en (английский):
 - overview — 2-3 предложения: общая картина дня, что двигает рынок и в какую сторону.
@@ -266,6 +270,12 @@ def build_brief(
     except (json.JSONDecodeError, KeyError, TypeError):
         quotes = ""
     quotes = f"Котировки:\n{quotes}\n\n" if quotes else ""
+    try:
+        economy = macro.summary(json.loads(db.get(conn, "macro")[0] or "{}"))
+    except (json.JSONDecodeError, KeyError, TypeError):
+        economy = ""
+    if economy:
+        quotes += f"Экономика (официальная статистика):\n{economy}\n\n"
     response = client.messages.parse(
         model=cfg.digest_model,
         max_tokens=16000,

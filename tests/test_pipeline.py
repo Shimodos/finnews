@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from finnews import db
@@ -152,6 +153,13 @@ def test_site_translated(tmp_path):
     assert len(days) == 1
     archive = (out / "archive.html").read_text(encoding="utf-8")
     assert f'href="{days[0]}"' in archive and "Огляд дня" in archive
+    # поиск по архиву: важные новости на трёх языках со ссылкой на оригинал
+    index = json.loads((out / "search.json").read_text(encoding="utf-8"))
+    assert index == [{
+        "d": days[0][4:14], "p": True, "u": "https://example.com/a", "s": "Test",
+        "ru": "Заголовок по-русски", "uk": "Заголовок українською", "en": "Apple beats earnings",
+    }]
+    assert 'id="q"' in archive and "search.json" in archive
     glossary = (out / "glossary.html").read_text(encoding="utf-8")
     assert "ETF" in glossary and "Фонд" in glossary
     day_page = (out / days[0]).read_text(encoding="utf-8")
@@ -187,6 +195,56 @@ def test_events(tmp_path):
 
     db.set_events(conn, [], hours=24)  # разметка стирается при следующем пересчёте
     assert site.render(cfg, conn).count("<article") == 3
+
+
+def test_macro(tmp_path):
+    import json
+    from datetime import date
+
+    from finnews import macro, site
+
+    def fake_bls(payload):
+        assert payload["seriesid"] == ["CUUR0000SA0", "LNS14000000"]
+        cpi = [("2026", "M13", "330.0"), ("2026", "M10", "330.0"), ("2026", "M09", "327.0"),
+               ("2025", "M10", "320.0"), ("2025", "M09", "318.0")]
+        jobs = [("2026", "M10", "4.1"), ("2026", "M09", "4.2")]
+        rows = lambda data: [{"year": y, "period": p, "value": v} for y, p, v in data]  # noqa: E731
+        return {"status": "REQUEST_SUCCEEDED", "Results": {"series": [
+            {"seriesID": "CUUR0000SA0", "data": rows(cpi)}, {"seriesID": "LNS14000000", "data": rows(jobs)},
+        ]}}
+
+    def broken():
+        raise RuntimeError("нет ответа")
+
+    data = macro.refresh(
+        {"ecb": {"value": 2.5, "period": "2026-11-20"}},  # прошлое значение
+        sources={
+            "fed": lambda: {"low": 3.75, "high": 4.0, "period": "2026-11-24"},
+            "bls": lambda: macro.bls(today=date(2026, 11, 27), post=fake_bls),
+            "ecb": broken,
+        },
+    )
+    assert data["us_cpi"] == {"value": 3.1, "period": "2026-10", "prev": 2.8}  # 330/320 и 327/318
+    assert data["us_unemployment"] == {"value": 4.1, "period": "2026-10", "prev": 4.2}
+    assert data["ecb"]["value"] == 2.5  # источник не ответил — осталось прежнее значение
+    assert "Ставка ФРС: 3.75–4.00%" in macro.summary(data)
+
+    cfg = Config(db_path=str(tmp_path / "t.db"))
+    conn = db.connect(cfg.db_path)
+    db.put(conn, "macro", json.dumps(data))
+    db.insert_article(
+        conn, url="https://example.com/a", title="Apple beats earnings", title_key="apple beats earnings",
+        summary="", source="Test", published=db.now_iso(),
+    )
+    client = FakeClient()
+    score_articles(cfg, conn, client=client)
+    assert build_brief(cfg, conn, client=client)
+    assert "Инфляция в США за год: 3.1% (за 2026-10, до этого 2.8%)" in client.brief_prompt
+
+    block = site.render(cfg, conn).split('class="market macro"')[1].split("</section>")[0]
+    assert block.count('class="fact"') == 4
+    assert "3.75–4.00%" in block and "3.1%" in block and "10.2026" in block and "2.8%" in block
+    assert "2.50%" in block and "20.11.2026" in block
 
 
 def test_earnings(tmp_path):

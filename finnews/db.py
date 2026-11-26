@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS briefs (
     created_at TEXT NOT NULL,
     data       TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS store (
+    key        TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    data       TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS market (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
     created_at TEXT NOT NULL,
@@ -138,6 +143,26 @@ def between(conn, start: str, end: str) -> list[sqlite3.Row]:
         "SELECT * FROM articles WHERE published >= ? AND published < ? ORDER BY published DESC",
         (start, end),
     ).fetchall()
+
+
+def important(conn, *, min_score: int) -> list[sqlite3.Row]:
+    """Все важные новости за всё время — для поиска по архиву."""
+    return conn.execute(
+        "SELECT * FROM articles WHERE score >= ? ORDER BY published DESC", (min_score,)
+    ).fetchall()
+
+
+def put(conn, key: str, data: str) -> None:
+    """Хранилище «ключ — значение» для данных, которые обновляются редко (макроданные и т. п.)."""
+    conn.execute(
+        "INSERT OR REPLACE INTO store (key, created_at, data) VALUES (?, ?, ?)", (key, now_iso(), data)
+    )
+
+
+def get(conn, key: str) -> tuple[str, str]:
+    """Возвращает (данные, когда сохранены); если ключа нет — ('', '')."""
+    row = conn.execute("SELECT data, created_at FROM store WHERE key = ?", (key,)).fetchone()
+    return (row["data"], row["created_at"]) if row else ("", "")
 
 
 def save_market(conn, data: str) -> None:

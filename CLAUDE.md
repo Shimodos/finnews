@@ -17,8 +17,8 @@ https://shimodos.github.io/finnews/. Исходно проект был дайд
 
 - Установка зависимостей: `uv sync` (без uv: `python -m venv .venv`, `pip install -e .`, pytest отдельно)
 - Тесты: `uv run pytest`
-- Всё для сайта: `uv run finnews update` — collect, prices, score, events, brief, site
-- Отдельные шаги: `collect`, `prices`, `score`, `events`, `brief`, `site`
+- Всё для сайта: `uv run finnews update` — collect, prices, macro, score, events, brief, site
+- Отдельные шаги: `collect`, `prices`, `macro`, `score`, `events`, `brief`, `site`
 - Только пересобрать страницы из базы, без сети и без трат: `uv run finnews site`
 - Telegram: `uv run finnews run --dry-run`, `digest`, `chat-id`
 
@@ -29,11 +29,13 @@ https://shimodos.github.io/finnews/. Исходно проект был дайд
 - `finnews/market.py` — котировки и часы бирж (Yahoo Finance): индексы, биржи, фонды сфер,
   список крупных компаний, лидеры дня.
 - `finnews/earnings.py` — календарь отчётов (Nasdaq).
+- `finnews/macro.py` — макроданные из официальных источников (ФРБ Нью-Йорка, BLS, ЕЦБ, Eurostat);
+  хранятся в таблице `store`, обновляются не чаще раза в 12 часов.
 - `finnews/llm.py` — вызовы Claude и тексты инструкций: оценка с переводом (Haiku), склейка
   повторов (Haiku), обзор дня и дайджест (Sonnet).
 - `finnews/db.py` — SQLite: `articles`, `briefs` (обзор на каждый день), `market` (последний
   снимок котировок и календаря). Новые колонки добавляются через `MIGRATIONS`.
-- `finnews/site.py` — сборка страниц: главная, архив, страницы дней, словарик. Один файл с
+- `finnews/site.py` — сборка страниц: главная, архив с поиском (`search.json`), страницы дней, словарик. Один файл с
   HTML, CSS и JS; тексты интерфейса на трёх языках — словарь `UI`.
 - `finnews/telegram.py` — отправка в Telegram, поиск chat_id.
 - `finnews/cli.py` — команды.

@@ -4,7 +4,9 @@ import logging
 import os
 import sys
 
-from . import db, earnings, market, site, telegram
+from datetime import datetime, timezone
+
+from . import db, earnings, macro, market, site, telegram
 from .collect import collect
 from .config import load_config, yahoo_ticker_feed
 from .llm import build_brief, build_digest, group_events, score_articles
@@ -70,6 +72,21 @@ def cmd_prices(cfg, conn, args) -> dict:
     return data
 
 
+MACRO_MAX_AGE_HOURS = 12  # макроданные меняются редко; чаще не запрашиваем, чтобы беречь лимиты
+
+
+def cmd_macro(cfg, conn, args) -> None:
+    saved, when = db.get(conn, "macro")
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(when)).total_seconds() / 3600 if when else None
+    if age is not None and age < MACRO_MAX_AGE_HOURS and not getattr(args, "force", False):
+        print(f"Макроданные свежие (обновлены {age:.0f} ч назад) — пропускаю.")
+        return
+    data = macro.refresh(json.loads(saved) if saved else {})
+    db.put(conn, "macro", json.dumps(data, ensure_ascii=False))
+    conn.commit()
+    print(f"Макропоказателей: {len(data)}")
+
+
 def cmd_update(cfg, conn, args) -> None:
     """Всё для сайта: сбор, котировки, оценка с переводом, обзор дня, страница."""
     cmd_collect(cfg, conn, args)
@@ -78,6 +95,7 @@ def cmd_update(cfg, conn, args) -> None:
     if leaders:
         stats = collect(cfg, conn, feeds=[yahoo_ticker_feed(s) for s in leaders])
         print(f"Новости по лидерам дня ({', '.join(leaders)}): +{sum(n for n in stats.values() if n > 0)}")
+    cmd_macro(cfg, conn, args)
     if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
         cmd_score(cfg, conn, args)
         cmd_events(cfg, conn, args)
@@ -103,6 +121,9 @@ def main() -> None:
     sub.add_parser("collect", help="собрать новости из лент").set_defaults(func=cmd_collect)
     sub.add_parser("score", help="оценить важность новых статей").set_defaults(func=cmd_score)
     sub.add_parser("prices", help="получить котировки для страницы").set_defaults(func=cmd_prices)
+    p = sub.add_parser("macro", help="обновить макроданные: ставки, инфляция, безработица")
+    p.add_argument("--force", action="store_true", help="обновить, даже если данные свежие")
+    p.set_defaults(func=cmd_macro)
     for name, func, help_ in (
         ("digest", cmd_digest, "собрать и отправить дайджест"),
         ("run", cmd_run, "всё сразу: collect + score + digest"),

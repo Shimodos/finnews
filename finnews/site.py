@@ -50,6 +50,45 @@ REGIONS = {
     "asia": ("Азия", "Азія", "Asia"),
     "world": ("Мир", "Світ", "World"),
 }
+# Макропоказатели: название и объяснение для новичка (ru, uk, en); порядок — как на странице.
+MACRO = {
+    "fed": (
+        ("Ставка ФРС", "Ставка ФРС", "Fed rate"),
+        ("Цена денег в США. Чем выше ставка, тем дороже кредиты и тем труднее расти акциям.",
+         "Ціна грошей у США. Що вища ставка, то дорожчі кредити і то важче зростати акціям.",
+         "The price of money in the US. The higher it is, the costlier loans get and the harder it is for stocks to rise."),
+    ),
+    "us_cpi": (
+        ("Инфляция в США", "Інфляція у США", "US inflation"),
+        ("Насколько выросли цены за год. ФРС стремится к 2%.",
+         "Наскільки зросли ціни за рік. ФРС прагне 2%.",
+         "How much prices rose over a year. The Fed aims for 2%."),
+    ),
+    "us_unemployment": (
+        ("Безработица в США", "Безробіття у США", "US unemployment"),
+        ("Доля людей, которые ищут работу. Рост говорит о слабеющей экономике.",
+         "Частка людей, які шукають роботу. Зростання свідчить про слабшання економіки.",
+         "The share of people looking for work. A rise signals a weakening economy."),
+    ),
+    "us_10y": (
+        ("Доходность 10-летних облигаций США", "Дохідність 10-річних облігацій США", "US 10-year Treasury yield"),
+        ("Сколько приносит самый надёжный долг. С ним сравнивают все остальные вложения.",
+         "Скільки приносить найнадійніший борг. З ним порівнюють усі інші вкладення.",
+         "What the safest debt pays. Every other investment is measured against it."),
+    ),
+    "ecb": (
+        ("Ставка ЕЦБ", "Ставка ЄЦБ", "ECB rate"),
+        ("Главная ставка еврозоны. Работает так же, как ставка ФРС.",
+         "Головна ставка єврозони. Працює так само, як ставка ФРС.",
+         "The euro area's key rate. It works the same way as the Fed rate."),
+    ),
+    "eu_unemployment": (
+        ("Безработица в еврозоне", "Безробіття в єврозоні", "Euro area unemployment"),
+        ("То же, что в США, но для стран с евро.",
+         "Те саме, що у США, але для країн з євро.",
+         "The same measure as in the US, for the countries that use the euro."),
+    ),
+}
 TONES = {
     "positive": ("позитив", "позитив", "positive"),
     "negative": ("негатив", "негатив", "negative"),
@@ -68,6 +107,8 @@ UI = {
     "also": ("Ещё об этом:", "Ще про це:", "More on this:"),
     "nav_archive": ("Архив", "Архів", "Archive"),
     "nav_glossary": ("Словарик", "Словничок", "Glossary"),
+    "search": ("Поиск по важным новостям", "Пошук серед важливих новин", "Search important stories"),
+    "no_results": ("Ничего не найдено.", "Нічого не знайдено.", "Nothing found."),
     "no_archive": (
         "Архив появится после первого обзора дня.",
         "Архів з'явиться після першого огляду дня.",
@@ -80,6 +121,13 @@ UI = {
     ),
     "pulse": ("Пульс рынка", "Пульс ринку", "Market pulse"),
     "movers": ("Кто двигался и почему", "Хто рухався і чому", "Who moved and why"),
+    "macro": ("Экономика в цифрах", "Економіка в цифрах", "The economy in numbers"),
+    "was": ("было", "було", "was"),
+    "macro_note": (
+        "Макроданные: ФРБ Нью-Йорка, Бюро статистики труда США, ЕЦБ, Eurostat.",
+        "Макродані: ФРБ Нью-Йорка, Бюро статистики праці США, ЄЦБ, Eurostat.",
+        "Macro data: New York Fed, US Bureau of Labor Statistics, ECB, Eurostat.",
+    ),
     "earnings": ("Календарь отчётов", "Календар звітів", "Earnings calendar"),
     "earnings_note": (
         "Отчёт — день, когда компания раскрывает результаты квартала. В такие дни её акции "
@@ -158,6 +206,17 @@ main { max-width: 720px; margin: 0 auto; padding: 56px 20px 96px; }
   border-bottom: 1px solid var(--line); color: inherit; text-decoration: none;
 }
 h1 + .entry { margin-top: 40px; border-top: 1px solid var(--text); }
+.search { display: block; margin: 40px 0 0; color: var(--muted); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
+.search input {
+  display: block; width: 100%; margin-top: 6px; padding: 8px 0 10px; border: 0; border-radius: 0;
+  border-bottom: 1px solid var(--text); background: none; color: var(--text);
+  font: 400 18px/1.35 var(--sans); outline: none; appearance: none;
+}
+.search input:focus-visible { border-bottom-color: var(--accent); }
+.entry a.when { color: var(--muted); text-decoration: none; }
+.entry a.when:hover { color: var(--text); }
+.entry a.term-name { color: inherit; text-decoration: none; }
+.entry a.term-name:hover { text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 4px; }
 .entry .term-name { font-size: 18px; font-weight: 500; }
 .entry .what { color: var(--muted); font-size: 15px; }
 a.entry:hover .what { color: var(--text); }
@@ -215,6 +274,11 @@ h1 .weekday { display: block; color: var(--muted); font-weight: 400; }
 .mover .because a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; }
 .mover .because a:hover { color: var(--text); text-decoration-color: var(--accent); }
 nav .chg { margin-left: 5px; }
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0 28px; }
+.fact { padding: 16px 0 14px; border-bottom: 1px solid var(--line); }
+.fact .name, .fact .sub { display: block; color: var(--muted); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
+.fact .value { display: block; margin: 4px 0 2px; font-size: 20px; font-weight: 500; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.fact .what { margin: 8px 0 0; font-size: 15px; color: var(--muted); }
 .earnings .lead { margin: 14px 0 0; font-size: 15px; color: var(--muted); }
 .earnings .when-day {
   margin: 22px 0 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); color: var(--muted);
@@ -419,6 +483,52 @@ if (strip) {
   strip.addEventListener('pointerup', stop);
   strip.addEventListener('pointercancel', stop);
 }
+"""
+
+
+# Поиск на странице архива: список важных новостей подгружается при первом запросе.
+SEARCH_JS = """
+const q = document.getElementById('q');
+const daysEl = document.getElementById('days');
+const resultsEl = document.getElementById('results');
+const noneEl = document.getElementById('none');
+let index = null;
+async function search() {
+  const text = q.value.trim().toLowerCase();
+  daysEl.hidden = !!text;
+  resultsEl.hidden = !text;
+  noneEl.hidden = true;
+  if (!text) return;
+  if (!index) {
+    try { index = await (await fetch('search.json')).json(); } catch (e) { index = []; }
+  }
+  if (q.value.trim().toLowerCase() !== text) return;  // пока грузилось, запрос изменился
+  const found = index.filter(a => (a.ru + ' ' + a.uk + ' ' + a.en + ' ' + a.s).toLowerCase().includes(text));
+  resultsEl.textContent = '';
+  noneEl.hidden = found.length > 0;
+  for (const a of found.slice(0, 50)) {
+    const row = document.createElement('div');
+    row.className = 'entry';
+    const when = document.createElement(a.p ? 'a' : 'span');
+    when.className = 'when';
+    if (a.p) when.href = 'day-' + a.d + '.html';
+    when.textContent = a.d.split('-').reverse().join('.') + ' · ' + a.s;
+    const link = document.createElement('a');
+    link.className = 'term-name';
+    link.href = a.u;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    for (const l of ['ru', 'uk', 'en']) {
+      const s = document.createElement('span');
+      s.dataset.l = l;
+      s.textContent = a[l];
+      link.appendChild(s);
+    }
+    row.append(when, link);
+    resultsEl.appendChild(row);
+  }
+}
+q.addEventListener('input', search);
 """
 
 
@@ -632,6 +742,40 @@ def _movers(data: dict, rows, count: int = 3) -> str:
     return f'<section class="market movers"><h2>{_ui("movers")}</h2>{"".join(items)}</section>'
 
 
+def _period(text: str) -> str:
+    """'2026-10' -> '10.2026', '2026-11-24' -> '24.11.2026'."""
+    return ".".join(reversed(str(text).split("-")))
+
+
+def _macro(data: dict) -> str:
+    """Ключевые показатели экономики с коротким объяснением, что каждый значит."""
+    facts = []
+    for key, (names, notes) in MACRO.items():
+        item = data.get(key)
+        if not isinstance(item, dict):
+            continue
+        try:
+            if key == "fed":
+                value, was = f"{item['low']:.2f}–{item['high']:.2f}%", ""
+            else:
+                digits = 2 if key in ("us_10y", "ecb") else 1
+                value = f"{item['value']:.{digits}f}%"
+                prev = item.get("prev")
+                changed = isinstance(prev, (int, float)) and f"{prev:.{digits}f}" != f"{item['value']:.{digits}f}"
+                was = f' · {_ui("was")} {prev:.{digits}f}%' if changed else ""
+            period = escape(_period(item["period"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        facts.append(
+            f'<div class="fact"><span class="name">{_tr([escape(n) for n in names])}</span>'
+            f'<span class="value">{value}</span><span class="sub">{period}{was}</span>'
+            f'{_tr([escape(n) for n in notes], "p", "what")}</div>'
+        )
+    if not facts:
+        return ""
+    return f'<section class="market macro"><h2>{_ui("macro")}</h2><div class="facts">{"".join(facts)}</div></section>'
+
+
 def _earnings(data: dict) -> str:
     """Календарь отчётов на ближайшие дни: кто, когда и какой прибыли ждут аналитики."""
     blocks = []
@@ -735,8 +879,11 @@ def _feed(cfg: Config, rows, today, quotes: dict) -> str:
     return _controls(rows, by_sector, any_scored, quotes) + body
 
 
-def _shell(title: str, content: str) -> str:
-    """Общая обвязка страниц: шапка со ссылками и языками, шрифты, стили, скрипт."""
+def _shell(title: str, content: str, script: str = "") -> str:
+    """Общая обвязка страниц: шапка со ссылками и языками, шрифты, стили, скрипт.
+
+    script — дополнительный скрипт только для этой страницы.
+    """
     langs = "".join(
         f'<button type="button" data-setlang="{lang}" aria-pressed="{str(lang == "en").lower()}">{lang}</button>'
         for lang in LANGS
@@ -762,7 +909,7 @@ def _shell(title: str, content: str) -> str:
 <nav class="langs" aria-label="language">{langs}</nav></div>
 {content}
 </main>
-<script>{JS}</script>
+<script>{JS}{script}</script>
 </body>
 </html>
 """
@@ -820,8 +967,34 @@ def render_archive(conn) -> str:
         + "</a>"
         for day, data in _brief_days(conn)
     )
-    content = f'<h1>{_ui("nav_archive")}</h1>{entries or _ui("no_archive", "p", "empty")}'
-    return _shell(UI["nav_archive"][2], content + f'<footer>{_ui("disclaimer")}</footer>')
+    content = (
+        f'<h1>{_ui("nav_archive")}</h1>'
+        f'<label class="search">{_ui("search")}<input id="q" type="search" autocomplete="off"></label>'
+        f'<div id="days">{entries or _ui("no_archive", "p", "empty")}</div>'
+        f'<div id="results" hidden></div><p id="none" class="empty" hidden>{_ui("no_results")}</p>'
+    )
+    return _shell(UI["nav_archive"][2], content + f'<footer>{_ui("disclaimer")}</footer>', SEARCH_JS)
+
+
+def search_index(cfg: Config, conn) -> list[dict]:
+    """Важные новости за всё время для поиска на странице архива (файл search.json)."""
+    days = {day for day, _ in _brief_days(conn)}
+    index = []
+    for row in db.important(conn, min_score=cfg.min_score):
+        if not row["url"].startswith(("http://", "https://")):
+            continue
+        i18n = _loads(row["i18n"])
+        day = datetime.fromisoformat(row["published"]).astimezone().date()
+        index.append({
+            "d": day.isoformat(),
+            "p": day in days,  # есть ли страница этого дня в архиве
+            "u": row["url"],
+            "s": row["source"],
+            "ru": (i18n.get("ru") or {}).get("title") or row["title"],
+            "uk": (i18n.get("uk") or {}).get("title") or row["title"],
+            "en": row["title"],
+        })
+    return index
 
 
 def render_glossary(conn) -> str:
@@ -861,6 +1034,9 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
     market = _loads(db.latest_market(conn, hours=hours))
     quotes = market.get("quotes") or {}
     quotes_note = f" {_ui('quotes_note')}" if quotes else ""
+    macro = _loads(db.get(conn, "macro")[0])
+    if any(key in macro for key in MACRO):
+        quotes_note += f" {_ui('macro_note')}"
     # Отсчёт до следующей сборки: расписание (UTC) задаётся там же, где она запускается.
     slots = [t for t in cfg.schedule if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", t)]
     countdown = f'<span id="next" data-schedule="{",".join(slots)}"></span>' if slots else ""
@@ -870,6 +1046,7 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
 {_pulse(market)}
 {_brief(_loads(db.latest_brief(conn, hours=hours)))}
 {_movers(market, rows)}
+{_macro(macro)}
 {_earnings(market)}
 {_feed(cfg, rows, today, quotes)}
 <footer>{_ui("disclaimer")}{quotes_note}</footer>"""
@@ -883,6 +1060,9 @@ def build(cfg: Config, conn, *, hours: int = 24, out_dir: str = "site") -> Path:
     path = out / "index.html"
     path.write_text(render(cfg, conn, hours=hours), encoding="utf-8")
     (out / "archive.html").write_text(render_archive(conn), encoding="utf-8")
+    (out / "search.json").write_text(
+        json.dumps(search_index(cfg, conn), ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+    )
     (out / "glossary.html").write_text(render_glossary(conn), encoding="utf-8")
     for day, brief in _brief_days(conn):
         (out / f"day-{day.isoformat()}.html").write_text(render_day(cfg, conn, day, brief), encoding="utf-8")
