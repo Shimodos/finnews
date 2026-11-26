@@ -6,6 +6,7 @@ data-lang у <html>. Заголовок всегда ведёт на ориги�
 
 import json
 import re
+import shutil
 from datetime import date, datetime, time, timedelta, timezone
 from html import escape
 from pathlib import Path
@@ -18,6 +19,18 @@ from .market import movers as top_movers
 LANGS = ("ru", "uk", "en")
 STORY_MIN_SCORE = 4  # новости с оценкой 0-3 — шум, движение акции ими не объясняем
 PAGES = (("archive.html", "nav_archive"), ("glossary.html", "nav_glossary"))  # ссылки в шапке
+
+# Файлы, которые копируются на сайт как есть: значок сайта и картинка для превью ссылки.
+ASSETS = Path(__file__).parent / "assets"
+# Описание сайта для поисковиков и превью ссылки (страница по умолчанию английская).
+DESCRIPTION = (
+    "Market news explained for beginner investors: stories from the US, Europe and Asia, "
+    "scored by importance, with a plain note on why each one matters. "
+    "In English, Ukrainian and Russian."
+)
+# Адрес сайта без косой черты в конце; его выставляет build() из настроек. Нужен только
+# для превью ссылки в соцсетях: там адрес картинки обязан быть полным.
+_site_url = ""
 
 MONTHS = {
     "ru": ["января", "февраля", "марта", "апреля", "мая", "июня",
@@ -1020,6 +1033,19 @@ def _shell(title: str, content: str, script: str = "") -> str:
         for lang in LANGS
     )
     links = "".join(f'<a href="{href}">{_ui(key)}</a>' for href, key in PAGES)
+    # Превью ссылки в соцсетях (Open Graph); без адреса сайта его не делаем.
+    social = ""
+    if _site_url:
+        social = f"""<meta property="og:type" content="website">
+<meta property="og:site_name" content="finnews">
+<meta property="og:title" content="finnews — market news, explained">
+<meta property="og:description" content="{escape(DESCRIPTION)}">
+<meta property="og:url" content="{escape(_site_url)}/">
+<meta property="og:image" content="{escape(_site_url)}/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+"""
     return f"""<!doctype html>
 <html lang="en" data-lang="en">
 <head>
@@ -1027,7 +1053,11 @@ def _shell(title: str, content: str, script: str = "") -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>finnews — {escape(title)}</title>
-<script>{HEAD_JS}</script>
+<meta name="description" content="{escape(DESCRIPTION)}">
+<link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+{social}<script>{HEAD_JS}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
@@ -1272,8 +1302,12 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
 
 def build(cfg: Config, conn, *, hours: int = 24, out_dir: str = "site") -> Path:
     """Пишет главную, архив по дням и словарик. Возвращает путь к главной."""
+    global _site_url
+    _site_url = cfg.site_url.rstrip("/") if cfg.site_url.startswith(("http://", "https://")) else ""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    for asset in ASSETS.iterdir():
+        shutil.copyfile(asset, out / asset.name)
     path = out / "index.html"
     path.write_text(render(cfg, conn, hours=hours), encoding="utf-8")
     (out / "archive.html").write_text(render_archive(conn), encoding="utf-8")

@@ -355,6 +355,23 @@ def test_earnings(tmp_path):
     assert "прогноз прибыли на акцию</span>" in block and ": $2.41" in block and ": −$0.32" in block
 
 
+def test_build_assets(tmp_path):
+    from finnews import site
+
+    cfg = Config(db_path=str(tmp_path / "t.db"), site_url="https://example.com/")
+    conn = db.connect(cfg.db_path)
+    page = site.build(cfg, conn, out_dir=str(tmp_path / "out")).read_text(encoding="utf-8")
+    for name in ("favicon.svg", "favicon-32.png", "apple-touch-icon.png", "og.png"):
+        assert (tmp_path / "out" / name).stat().st_size > 0
+    assert '<link rel="icon" href="favicon.svg" type="image/svg+xml">' in page
+    assert '<meta property="og:image" content="https://example.com/og.png">' in page
+    assert '<meta name="twitter:card" content="summary_large_image">' in page
+    # без адреса сайта превью ссылки нет, значок остаётся
+    cfg.site_url = ""
+    page = site.build(cfg, conn, out_dir=str(tmp_path / "out")).read_text(encoding="utf-8")
+    assert "og:image" not in page and 'rel="icon"' in page
+
+
 def test_filings(tmp_path):
     import json
     from datetime import date

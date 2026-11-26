@@ -43,6 +43,8 @@ class Config:
     schedule: list[str] = field(default_factory=list)
     # Контакт для запросов к SEC EDGAR (его требует SEC); пусто — отчёты компаний не запрашиваются.
     sec_contact: str = ""
+    # Адрес сайта, например https://finnews.app — для превью ссылки в соцсетях. Пусто — без превью.
+    site_url: str = ""
 
     @property
     def feeds(self) -> list[tuple[str, str]]:
@@ -62,4 +64,5 @@ def load_config() -> Config:
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         schedule=[t.strip() for t in os.getenv("FINNEWS_SCHEDULE", "").split(",") if t.strip()],
         sec_contact=os.getenv("SEC_CONTACT", "").strip(),
+        site_url=os.getenv("FINNEWS_SITE_URL", "").strip(),
     )
