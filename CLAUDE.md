@@ -17,8 +17,8 @@ https://finnews.app (GitHub Pages со своим доменом). Исходн�
 
 - Установка зависимостей: `uv sync` (без uv: `python -m venv .venv`, `pip install -e .`, pytest отдельно)
 - Тесты: `uv run pytest`
-- Всё для сайта: `uv run finnews update` — collect, prices, macro, fuel, filings, score, events, movers, brief, weekly, site
-- Отдельные шаги: `collect`, `prices`, `macro`, `fuel`, `filings`, `score`, `events`, `movers`, `brief`, `weekly`, `site`
+- Всё для сайта: `uv run finnews update` — collect, prices, macro, fuel, filings, score, events, movers, brief, weekly, site, cards
+- Отдельные шаги: `collect`, `prices`, `macro`, `fuel`, `filings`, `score`, `events`, `movers`, `brief`, `weekly`, `site`, `cards`
 - Только пересобрать страницы из базы, без сети и без трат: `uv run finnews site`
 - Telegram: `uv run finnews run --dry-run`, `digest`, `chat-id`
 
@@ -49,6 +49,10 @@ https://finnews.app (GitHub Pages со своим доменом). Исходн�
   HTML, CSS и JS; тексты интерфейса на трёх языках — словарь `UI`.
 - `finnews/assets/` — значок сайта и картинка превью ссылки (`og.png`); `build` копирует их на
   сайт как есть. Превью-теги добавляются, только если задан `FINNEWS_SITE_URL`.
+- `finnews/cards.py` — карточки для Instagram (карусель, лидеры дня, истории) на трёх языках:
+  HTML в `site/cards/`, картинки снимает установленный браузер без окна (на GitHub — Chrome из
+  образа сборки). Нет браузера — остаётся HTML, сборка не падает. Денег не тратит: заголовок
+  дня (`headline`, `lead`) приходит вместе с обзором.
 - `finnews/telegram.py` — отправка в Telegram, поиск chat_id.
 - `finnews/cli.py` — команды.
 - `.github/workflows/publish.yml` — сборка по расписанию и выкладка на GitHub Pages; база

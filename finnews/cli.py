@@ -6,7 +6,7 @@ import sys
 
 from datetime import date, datetime, timedelta, timezone
 
-from . import db, earnings, edgar, fuel, hours, macro, market, site, telegram
+from . import cards, db, earnings, edgar, fuel, hours, macro, market, site, telegram
 from .collect import collect
 from .config import load_config, yahoo_ticker_feed
 from .llm import build_brief, build_digest, build_weekly, explain_movers, group_events, score_articles
@@ -48,6 +48,13 @@ def cmd_run(cfg, conn, args) -> None:
 def cmd_site(cfg, conn, args) -> None:
     path = site.build(cfg, conn, hours=args.hours, out_dir=args.out)
     print(f"Страница собрана: {path.resolve()}")
+
+
+def cmd_cards(cfg, conn, args) -> None:
+    """Карточки для Instagram: страницы и картинки в папке cards внутри сайта."""
+    total, images = cards.build(cfg, conn, hours=args.hours, out_dir=args.out)
+    note = "" if images == total else " (браузер не найден или не справился — остальные только в HTML)"
+    print(f"Карточек для соцсетей: {total}, картинок: {images}{note}")
 
 
 def cmd_events(cfg, conn, args) -> None:
@@ -152,6 +159,7 @@ def cmd_update(cfg, conn, args) -> None:
     else:
         print("ANTHROPIC_API_KEY не задан — пропускаю оценку, перевод и обзор дня.")
     cmd_site(cfg, conn, args)
+    cmd_cards(cfg, conn, args)
 
 
 def cmd_chat_id(cfg, conn, args) -> None:
@@ -198,7 +206,8 @@ def main() -> None:
         p.set_defaults(func=func)
     for name, func, help_ in (
         ("site", cmd_site, "собрать веб-страницу с новостями"),
-        ("update", cmd_update, "всё для сайта: collect + prices + score + events + movers + brief + site"),
+        ("cards", cmd_cards, "собрать карточки для Instagram из готовых данных"),
+        ("update", cmd_update, "всё для сайта: collect + prices + score + events + movers + brief + site + cards"),
     ):
         p = sub.add_parser(name, help=help_)
         p.add_argument("--hours", type=int, default=24, help="за сколько часов брать новости")

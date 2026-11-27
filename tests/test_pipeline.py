@@ -59,7 +59,8 @@ class FakeClient:
             return SimpleNamespace(stop_reason="end_turn", parsed_output=week)
         if kw["output_format"] is Brief:
             self.brief_prompt = kw["messages"][0]["content"]
-            text = BriefText(overview="Обзор <дня>", points=["Пункт"], term="ETF", term_explained="Фонд")
+            text = BriefText(overview="Обзор <дня>", points=["Пункт"], term="ETF", term_explained="Фонд",
+                             headline="Заголовок дня", lead="Подводка")
             brief = Brief(ru=text, uk=text.model_copy(update={"overview": "Огляд дня"}), en=text)
             return SimpleNamespace(stop_reason="end_turn", parsed_output=brief)
         items = [
@@ -438,6 +439,62 @@ def test_money(tmp_path):
     assert "$0.96" in block and "$3.64 per gallon · week to 23.11 · was $1.01" in block
     assert "$1.96" in block and "€1.78 за литр · неделя к 23.11 · было $1.93" in block
     assert "Сырьё, изменение за день: нефть Brent $100.00" in market.summary(data)
+
+
+def test_cards(tmp_path):
+    from finnews import cards, market
+
+    cfg = Config(db_path=str(tmp_path / "t.db"), site_url="https://example.com")
+    conn = db.connect(cfg.db_path)
+    out = tmp_path / "site"
+    # данных нет — остаётся только последний слайд карусели; без браузера картинок нет
+    assert cards.build(cfg, conn, out_dir=str(out), shot=lambda *a: False) == (3, 0)
+    assert "ru.html?c=final" in (out / "cards" / "index.html").read_text(encoding="utf-8")
+
+    db.insert_article(
+        conn, url="https://example.com/a", title="Apple beats earnings", title_key="apple beats earnings",
+        summary="Original summary", source="Test", published=db.now_iso(),
+    )
+    client = FakeClient()
+    assert score_articles(cfg, conn, client=client) == 1
+    assert build_brief(cfg, conn, client=client)
+    data = market.snapshot(cfg, get=fake_yahoo)
+    db.save_market(conn, json.dumps(data))
+    leaders = market.movers(data, cards.MOVERS)
+    reasons = {s: {"ru": "Причина <роста>", "uk": "Причина", "en": "Reason"} for s in leaders}
+    db.put(conn, "movers", json.dumps({"asof": data["asof"], "items": reasons}))
+
+    shots = []
+
+    def shot(url, path, size):
+        shots.append((url, size))
+        path.write_bytes(b"png")
+        return True
+
+    total, images = cards.build(cfg, conn, out_dir=str(out), shot=shot)
+    names = [name for name, _, _ in cards.cards(cards.collect(cfg, conn), "ru")]
+    expected = ["cover", "news1", "markets", "term", "final", "story-main", "story-markets"]
+    if leaders:
+        expected.insert(5, "movers")
+    assert names == expected and total == images == len(names) * 3
+    assert (out / "cards" / "uk-01-cover.png").read_bytes() == b"png"
+    assert shots[0][0].endswith("ru.html?c=cover") and shots[0][1] == cards.POST
+    assert any(size == cards.STORY for _, size in shots)
+
+    page = (out / "cards" / "ru.html").read_text(encoding="utf-8")
+    # заголовок дня из обзора, счётчик слайдов, перевод новости, адрес сайта из настроек
+    assert "Заголовок дня" in page and "2 / 5" in page and "Заголовок по-русски" in page
+    assert "<b>example.com</b>" in page and "S&amp;P 500" in page
+    if leaders:
+        assert "Причина &lt;роста&gt;" in page
+    listing = (out / "cards" / "index.html").read_text(encoding="utf-8")
+    assert 'href="en-01-cover.png" download' in listing and "#investing" in listing
+    assert "Заголовок дня" in cards.caption(cards.collect(cfg, conn), "ru")
+
+    # длинный текст режется по предложению, а если не выходит — по слову
+    assert cards._clip("Первое предложение. Второе предложение длиннее.", 30) == "Первое предложение."
+    assert cards._clip("одно очень длинное предложение без точки", 20) == "одно очень длинное…"
+    assert cards._topic("Китай: меры поддержки") == ("Китай", "меры поддержки")
 
 
 def test_build_assets(tmp_path):
