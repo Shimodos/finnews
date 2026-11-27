@@ -7,6 +7,7 @@ import anthropic
 from pydantic import BaseModel
 
 from . import db, macro, market
+from .collect import untranslated
 from .config import Config
 
 log = logging.getLogger(__name__)
@@ -35,7 +36,9 @@ tech, finance (банки, страхование, финансы), energy (эн
 consumer (розница, товары и услуги для людей), industry (промышленность, транспорт), crypto, other.
 tone — как новость скорее сказывается на затронутых бумагах или рынке: positive, negative \
 или neutral. Если из новости это не следует — neutral.
-title_ru, title_uk — точный перевод заголовка на русский и украинский, без добавлений.
+title_ru, title_uk — точный перевод заголовка на русский и украинский, без добавлений. \
+Переводи заголовок всегда, даже если он почти целиком состоит из названий компаний: названия \
+остаются как есть, остальные слова переводятся.
 summary_ru, summary_uk — перевод описания на русский и украинский; если описания нет — пустая строка.
 why_ru, why_uk, why_en — одно короткое предложение на русском, украинском и английском: \
 что эта новость значит для обычного долгосрочного инвестора. Простыми словами, без советов \
@@ -194,6 +197,16 @@ class ScoreBatch(BaseModel):
     items: list[Score]
 
 
+class TitlePair(BaseModel):
+    index: int
+    ru: str
+    uk: str
+
+
+class TitleBatch(BaseModel):
+    items: list[TitlePair]
+
+
 class BriefText(BaseModel):
     overview: str
     points: list[str]
@@ -246,6 +259,32 @@ def _text(response) -> str:
     return "".join(b.text for b in response.content if b.type == "text").strip()
 
 
+TITLES_SYSTEM = """Переведи заголовки финансовых новостей на русский (ru) и украинский (uk). \
+Перевод точный, без добавлений. Названия компаний и тикеры оставляй как есть, все остальные \
+слова переводи. Верни перевод для каждого index из списка."""
+
+
+def _translate_titles(cfg: Config, client, titles: dict[int, str]) -> dict[int, tuple[str, str]]:
+    """Перевод заголовков, которые при оценке вернулись без перевода. Одна попытка."""
+    listing = "\n\n".join(f"index: {i}\nзаголовок: {title}" for i, title in titles.items())
+    try:
+        response = client.messages.parse(
+            model=cfg.score_model,
+            max_tokens=4000,
+            output_config={"effort": "low"},
+            system=TITLES_SYSTEM,
+            messages=[{"role": "user", "content": listing}],
+            output_format=TitleBatch,
+        )
+    except anthropic.APIError as error:  # оценки пакета уже получены — из-за заголовков их не теряем
+        log.warning("Заголовки не переведены повторно: %s", error)
+        return {}
+    if response.stop_reason != "end_turn" or response.parsed_output is None:
+        log.warning("Заголовки не переведены повторно (stop_reason=%s)", response.stop_reason)
+        return {}
+    return {item.index: (item.ru, item.uk) for item in response.parsed_output.items if item.index in titles}
+
+
 def score_articles(cfg: Config, conn, client: anthropic.Anthropic | None = None) -> int:
     """Оценивает ещё не оценённые статьи. Возвращает их количество."""
     rows = db.unscored(conn)
@@ -276,27 +315,37 @@ def score_articles(cfg: Config, conn, client: anthropic.Anthropic | None = None)
         if response.stop_reason != "end_turn" or response.parsed_output is None:
             log.warning("Пакет %d не оценён (stop_reason=%s)", start // BATCH, response.stop_reason)
             continue
-        for item in response.parsed_output.items:
-            if 0 <= item.index < len(batch):
-                db.save_score(
-                    conn,
-                    batch[item.index]["id"],
-                    max(0, min(10, item.score)),
-                    [t.upper() for t in item.tickers],
-                    item.why_ru,
-                    sector=item.sector,
-                    region=item.region,
-                    tone=item.tone,
-                    i18n=json.dumps(
-                        {
-                            "ru": {"title": item.title_ru, "summary": item.summary_ru, "why": item.why_ru},
-                            "uk": {"title": item.title_uk, "summary": item.summary_uk, "why": item.why_uk},
-                            "en": {"why": item.why_en},
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
-                done += 1
+        items = [item for item in response.parsed_output.items if 0 <= item.index < len(batch)]
+        # Модель иногда возвращает заголовок как был; такие переводим отдельным запросом.
+        missed = {
+            item.index: batch[item.index]["title"]
+            for item in items
+            if untranslated(batch[item.index]["title"], item.title_ru)
+            or untranslated(batch[item.index]["title"], item.title_uk)
+        }
+        fixed = _translate_titles(cfg, client, missed) if missed else {}
+        for item in items:
+            if item.index in fixed:
+                item.title_ru, item.title_uk = fixed[item.index]
+            db.save_score(
+                conn,
+                batch[item.index]["id"],
+                max(0, min(10, item.score)),
+                [t.upper() for t in item.tickers],
+                item.why_ru,
+                sector=item.sector,
+                region=item.region,
+                tone=item.tone,
+                i18n=json.dumps(
+                    {
+                        "ru": {"title": item.title_ru, "summary": item.summary_ru, "why": item.why_ru},
+                        "uk": {"title": item.title_uk, "summary": item.summary_uk, "why": item.why_uk},
+                        "en": {"why": item.why_en},
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            done += 1
         conn.commit()
     return done
 

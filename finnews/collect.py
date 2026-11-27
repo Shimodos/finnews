@@ -27,6 +27,14 @@ def title_key(title: str) -> str:
     return " ".join(_NON_WORD.sub(" ", title.lower()).split())
 
 
+def untranslated(original: str, translated: str) -> bool:
+    """Перевода нет или он повторяет оригинал, написанный не кириллицей."""
+    original, translated = " ".join(str(original or "").split()), " ".join(str(translated or "").split())
+    if re.search("[а-яёіїєґ]", original, re.IGNORECASE):
+        return False
+    return not translated or translated.casefold() == original.casefold()
+
+
 def is_duplicate(key: str, known: list[str]) -> bool:
     for other in known:
         if key == other:

@@ -5,7 +5,8 @@ from finnews import db
 from finnews.collect import clean, is_duplicate, title_key
 from finnews.config import Config
 from finnews.llm import (
-    Brief, BriefText, EventGroup, EventGroups, MoverReason, MoverReasons, Score, ScoreBatch, Week, WeekText,
+    Brief, BriefText, EventGroup, EventGroups, MoverReason, MoverReasons, Score, ScoreBatch, TitleBatch,
+    TitlePair, Week, WeekText,
     build_brief, build_digest, build_weekly, explain_movers, group_events, score_articles,
 )
 from finnews.telegram import split_message
@@ -63,11 +64,17 @@ class FakeClient:
                              headline="Заголовок дня", lead="Подводка")
             brief = Brief(ru=text, uk=text.model_copy(update={"overview": "Огляд дня"}), en=text)
             return SimpleNamespace(stop_reason="end_turn", parsed_output=brief)
+        if kw["output_format"] is TitleBatch:
+            self.titles_prompt = kw["messages"][0]["content"]
+            pairs = [TitlePair(index=int(b.split()[0]), ru="Перевод заново", uk="Переклад заново") for b in blocks]
+            return SimpleNamespace(stop_reason="end_turn", parsed_output=TitleBatch(items=pairs))
+        raw = "AMD's Earnings"  # заголовок, который «модель» возвращает без перевода
         items = [
             Score(
                 index=i, score=8 if "Apple" in block else 2, tickers=["aapl"], sector="tech",
                 region="asia" if "Nikkei" in block else "us",
-                tone="positive", title_ru="Заголовок по-русски", title_uk="Заголовок українською",
+                tone="positive", title_ru=raw if raw in block else "Заголовок по-русски",
+                title_uk=raw if raw in block else "Заголовок українською",
                 summary_ru="", summary_uk="", why_ru="Почему важно", why_uk="Чому важливо",
                 why_en="Why it matters",
             )
@@ -106,6 +113,29 @@ def test_score_and_digest(tmp_path):
 
     db.mark_digested(conn, ids)
     assert build_digest(cfg, conn, client=client) == ("", [])
+
+
+def test_untranslated_title(tmp_path):
+    from finnews.collect import untranslated
+
+    assert untranslated("AMD's Earnings", "AMD's  earnings") and untranslated("Apple beats", "")
+    assert not untranslated("Apple beats", "Apple превзошла") and not untranslated("Уже по-русски", "Уже по-русски")
+
+    cfg = Config(db_path=str(tmp_path / "t.db"))
+    conn = db.connect(cfg.db_path)
+    for i, title in enumerate(["Apple beats earnings", "AMD's Earnings"]):
+        db.insert_article(
+            conn, url=f"https://example.com/{i}", title=title, title_key=title_key(title),
+            summary="", source="Test", published=db.now_iso(),
+        )
+    client = FakeClient()
+    assert score_articles(cfg, conn, client=client) == 2
+    # повторно спрашивали только про заголовок, оставшийся без перевода
+    assert "AMD's Earnings" in client.titles_prompt and "Apple" not in client.titles_prompt
+    titles = {r["title"]: json.loads(r["i18n"]) for r in conn.execute("SELECT title, i18n FROM articles")}
+    assert titles["AMD's Earnings"]["ru"]["title"] == "Перевод заново"
+    assert titles["AMD's Earnings"]["uk"]["title"] == "Переклад заново"
+    assert titles["Apple beats earnings"]["ru"]["title"] == "Заголовок по-русски"
 
 
 def test_site(tmp_path):
@@ -489,6 +519,21 @@ def test_cards(tmp_path):
         assert "Причина &lt;роста&gt;" in page
     listing = (out / "cards" / "index.html").read_text(encoding="utf-8")
     assert 'href="en-01-cover.png" download' in listing and "#investing" in listing
+    # группы подписаны: что постом, что историей; под картинкой — номер файла
+    assert "Пост-карусель" in listing and "Истории" in listing and "Carousel post" in listing
+    assert "<figcaption>01 · cover</figcaption>" in listing
+    assert listing.index("Истории") < listing.index("story-main.png") and ("Отдельный пост" in listing) == bool(leaders)
+
+    # новость, заголовок которой остался без перевода, на карточку не идёт
+    db.insert_article(
+        conn, url="https://example.com/b", title="Nvidia hits pause", title_key="nvidia hits pause",
+        summary="", source="Test", published=db.now_iso(),
+    )
+    conn.execute(
+        "UPDATE articles SET score = 10, i18n = ? WHERE url = 'https://example.com/b'",
+        (json.dumps({"ru": {"title": "Nvidia hits pause"}, "uk": {"title": "Nvidia hits pause"}}),),
+    )
+    assert [n["title"][2] for n in cards.collect(cfg, conn)["news"]] == ["Apple beats earnings"]
     assert "Заголовок дня" in cards.caption(cards.collect(cfg, conn), "ru")
 
     # длинный текст режется по предложению, а если не выходит — по слову

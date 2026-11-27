@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import db
+from .collect import untranslated
 from .config import Config
 from .market import movers as top_movers
 from .site import LANGS, MONTHS, REGIONS, SECTORS, UI, WEEKDAYS, _loads
@@ -69,6 +70,33 @@ TEXT = {
         "#інвестиції #фінанси #фондовийринок #акції #новиниринків",
         "#investing #stockmarket #finance #marketnews #investingforbeginners",
     ),
+    # подписи на странице cards/index.html — что из набора куда выкладывать
+    "tap": (
+        "Нажмите на картинку, чтобы скачать её.", "Натисніть на картинку, щоб завантажити її.",
+        "Click an image to download it.",
+    ),
+    "carousel": ("Пост-карусель", "Пост-карусель", "Carousel post"),
+    "carousel_hint": (
+        "Один пост: выберите все слайды в порядке номеров, формат 4:5. Подпись к нему — ниже.",
+        "Один пост: виберіть усі слайди в порядку номерів, формат 4:5. Підпис до нього — нижче.",
+        "One post: pick all slides in number order, 4:5 format. Its caption is below.",
+    ),
+    "single": ("Отдельный пост", "Окремий пост", "Single post"),
+    "single_hint": (
+        "Одна картинка отдельным постом, по желанию.", "Одна картинка окремим постом, за бажанням.",
+        "One image as its own post, optional.",
+    ),
+    "stories": ("Истории", "Історії", "Stories"),
+    "stories_hint": (
+        "Каждая картинка — отдельная история. Выкладываются только из приложения на телефоне; "
+        "добавьте стикер «Ссылка» с адресом сайта.",
+        "Кожна картинка — окрема історія. Викладаються лише із застосунку на телефоні; "
+        "додайте стікер «Посилання» з адресою сайту.",
+        "Each image is a separate story. Stories can only be posted from the phone app; "
+        "add a Link sticker with the site address.",
+    ),
+    "caption": ("Подпись к посту-карусели", "Підпис до поста-каруселі", "Caption for the carousel post"),
+    "copy": ("Скопировать подпись", "Скопіювати підпис", "Copy caption"),
 }
 
 LOGO = (
@@ -212,6 +240,9 @@ def _news(cfg: Config, conn, hours: int) -> list[dict]:
         def text(lang: str, field: str, fallback: str = "") -> str:
             return str((i18n.get(lang) or {}).get(field) or fallback or "")
 
+        # Модель иногда возвращает заголовок без перевода — на карточке это выглядит как ошибка.
+        if any(untranslated(row["title"], text(lang, "title")) for lang in ("ru", "uk")):
+            continue
         items.append({
             "score": row["score"], "sector": row["sector"], "region": row["region"],
             "title": [text("ru", "title", row["title"]), text("uk", "title", row["title"]), row["title"]],
@@ -430,23 +461,41 @@ def page(items, lang: str) -> str:
 def index(data: dict, files: dict) -> str:
     """Страница для владельца сайта: картинки и подписи на каждом языке — скачать и выложить."""
     sections = []
-    for lang in LANGS:
-        thumbs = "".join(
-            f'<a href="{escape(href)}" {"download" if href.endswith(".png") else ""}>'
-            + (f'<img src="{escape(href)}" alt="{name}" loading="lazy">' if href.endswith(".png") else name)
-            + "</a>"
-            for name, href in files[lang]
-        )
-        sections.append(
-            f"<h2>{lang}</h2><div class=\"thumbs\">{thumbs}</div>"
-            f'<textarea readonly rows="12">{escape(caption(data, lang))}</textarea>'
-        )
+    for i, lang in enumerate(LANGS):
+        groups: dict = {}
+        for n, (name, href) in enumerate(files[lang], 1):
+            group = "stories" if name.startswith("story") else "single" if name == "movers" else "carousel"
+            groups.setdefault(group, []).append(
+                f'<figure><a href="{escape(href)}" {"download" if href.endswith(".png") else ""}>'
+                + (f'<img src="{escape(href)}" alt="{name}" loading="lazy">' if href.endswith(".png") else name)
+                + f"</a><figcaption>{n:02d} · {name}</figcaption></figure>"
+            )
+        blocks = []
+        for group in ("carousel", "single", "stories"):
+            if group not in groups:
+                continue
+            blocks.append(
+                f'<h3>{TEXT[group][i]}</h3><p class="hint">{TEXT[f"{group}_hint"][i]}</p>'
+                f'<div class="thumbs">{"".join(groups[group])}</div>'
+            )
+            if group == "carousel":
+                blocks.append(
+                    f'<h4>{TEXT["caption"][i]}</h4>'
+                    f'<textarea readonly rows="12">{escape(caption(data, lang))}</textarea>'
+                    '<button type="button" onclick="const t=this.previousElementSibling;t.select();'
+                    f'if(navigator.clipboard)navigator.clipboard.writeText(t.value)">{TEXT["copy"][i]}</button>'
+                )
+        sections.append(f'<section><h2>{lang}</h2><p class="hint">{TEXT["tap"][i]}</p>{"".join(blocks)}</section>')
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex">'
         '<meta name="viewport" content="width=device-width, initial-scale=1"><title>finnews — cards</title>'
         "<style>body{font:16px system-ui,sans-serif;margin:24px;background:#fbfaf7;color:#171612}"
         ".thumbs{display:flex;flex-wrap:wrap;gap:12px}.thumbs img{width:180px;border:1px solid #e6e3da;display:block}"
-        "textarea{width:100%;max-width:720px;margin-top:12px;font:14px ui-monospace,monospace}</style></head>"
+        "textarea{display:block;width:100%;max-width:720px;font:14px ui-monospace,monospace}"
+        "section{border-top:1px solid #e6e3da;margin-top:32px}h3{margin:28px 0 4px}h4{margin:20px 0 8px}"
+        ".hint{color:#7d7a70;margin:0 0 12px;max-width:720px}figure{margin:0}"
+        "figcaption{font:12px ui-monospace,monospace;color:#7d7a70;margin-top:4px}"
+        "button{margin-top:8px;padding:8px 14px;font:inherit;cursor:pointer}</style></head>"
         f'<body><h1>finnews — cards · {data["now"]:%Y-%m-%d %H:%M}</h1>{"".join(sections)}</body></html>'
     )
 
