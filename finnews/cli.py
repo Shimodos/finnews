@@ -6,7 +6,7 @@ import sys
 
 from datetime import date, datetime, timedelta, timezone
 
-from . import db, earnings, edgar, hours, macro, market, site, telegram
+from . import db, earnings, edgar, fuel, hours, macro, market, site, telegram
 from .collect import collect
 from .config import load_config, yahoo_ticker_feed
 from .llm import build_brief, build_digest, build_weekly, explain_movers, group_events, score_articles
@@ -77,6 +77,19 @@ def cmd_prices(cfg, conn, args) -> dict:
     return data
 
 
+def cmd_fuel(cfg, conn, args) -> None:
+    """Цены на бензин: данные недельные, поэтому чаще раза в 12 часов не запрашиваем."""
+    saved, when = db.get(conn, "fuel")
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(when)).total_seconds() / 3600 if when else None
+    if age is not None and age < MACRO_MAX_AGE_HOURS and not getattr(args, "force", False):
+        print(f"Цены на бензин свежие (обновлены {age:.0f} ч назад) — пропускаю.")
+        return
+    data = fuel.refresh(json.loads(saved) if saved else {})
+    db.put(conn, "fuel", json.dumps(data, ensure_ascii=False))
+    conn.commit()
+    print(f"Цен на бензин: {len(data)}")
+
+
 def cmd_filings(cfg, conn, args) -> None:
     """Свежие отчёты компаний из SEC EDGAR."""
     if not cfg.sec_contact:
@@ -128,6 +141,7 @@ def cmd_update(cfg, conn, args) -> None:
         stats = collect(cfg, conn, feeds=[yahoo_ticker_feed(s) for s in leaders])
         print(f"Новости по лидерам дня ({', '.join(leaders)}): +{sum(n for n in stats.values() if n > 0)}")
     cmd_macro(cfg, conn, args)
+    cmd_fuel(cfg, conn, args)
     cmd_filings(cfg, conn, args)
     if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
         cmd_score(cfg, conn, args)
@@ -159,6 +173,9 @@ def main() -> None:
     p = sub.add_parser("macro", help="обновить макроданные: ставки, инфляция, безработица")
     p.add_argument("--force", action="store_true", help="обновить, даже если данные свежие")
     p.set_defaults(func=cmd_macro)
+    p = sub.add_parser("fuel", help="обновить цены на бензин в США и ЕС")
+    p.add_argument("--force", action="store_true", help="обновить, даже если данные свежие")
+    p.set_defaults(func=cmd_fuel)
     sub.add_parser("filings", help="получить свежие отчёты компаний из SEC EDGAR").set_defaults(func=cmd_filings)
     p = sub.add_parser("weekly", help="написать обзор текущей недели")
     p.add_argument("--force", action="store_true", help="написать сейчас, не дожидаясь выходных")

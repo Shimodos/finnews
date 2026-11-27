@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import db
 from .config import Config
+from .fuel import LITRES_PER_GALLON
 from .market import EXCHANGES, SECTOR_SYMBOLS
 from .market import movers as top_movers
 
@@ -138,6 +139,22 @@ FILING_ITEMS = {
     "8.01": ("прочие важные события", "інші важливі події", "other events"),
 }
 FILING_DAYS = 7  # отчёты старше на странице не показываются
+# Сырьё: символ, название (ru, uk, en), единица — ключ в UI.
+COMMODITIES = (
+    ("BZ=F", ("Нефть Brent", "Нафта Brent", "Brent crude"), "per_barrel"),
+    ("CL=F", ("Нефть WTI", "Нафта WTI", "WTI crude"), "per_barrel"),
+    ("GC=F", ("Золото", "Золото", "Gold"), "per_ounce"),
+    ("SI=F", ("Серебро", "Срібло", "Silver"), "per_ounce"),
+)
+# Валюты: символ, название, «одна единица» слева, знак цены справа, знаков после запятой.
+CURRENCIES = (
+    ("EURUSD=X", ("Евро", "Євро", "Euro"), "1 €", "$", 4),
+    ("GBPUSD=X", ("Фунт стерлингов", "Фунт стерлінгів", "British pound"), "1 £", "$", 4),
+    ("USDJPY=X", ("Японская иена", "Японська єна", "Japanese yen"), "1 $", "¥", 2),
+    ("USDCNY=X", ("Китайский юань", "Китайський юань", "Chinese yuan"), "1 $", "CN¥", 4),
+    ("USDUAH=X", ("Гривна за доллар", "Гривня за долар", "Hryvnia per dollar"), "1 $", "₴", 2),
+    ("EURUAH=X", ("Гривна за евро", "Гривня за євро", "Hryvnia per euro"), "1 €", "₴", 2),
+)
 TONES = {
     "positive": ("позитив", "позитив", "positive"),
     "negative": ("негатив", "негатив", "negative"),
@@ -215,6 +232,40 @@ UI = {
         "Securities and Exchange Commission (SEC). This is the primary source: the company's own words.",
     ),
     "document": ("документ →", "документ →", "document →"),
+    "money": ("Сырьё, валюты и бензин", "Сировина, валюти та бензин", "Commodities, currencies and gasoline"),
+    "commodities": ("Сырьё", "Сировина", "Commodities"),
+    "currencies": ("Валюты", "Валюти", "Currencies"),
+    "gasoline": ("Бензин на заправке", "Бензин на заправці", "Gasoline at the pump"),
+    "per_barrel": ("за баррель", "за барель", "per barrel"),
+    "per_ounce": ("за унцию", "за унцію", "per ounce"),
+    "per_litre": ("за литр", "за літр", "per litre"),
+    "per_gallon": ("за галлон", "за галон", "per gallon"),
+    "week_to": ("неделя к", "тиждень до", "week to"),
+    "fx_note": (
+        "Процент показывает, как курс изменился за день. Если пара растёт, первая валюта дорожает.",
+        "Відсоток показує, як курс змінився за день. Якщо пара зростає, перша валюта дорожчає.",
+        "The percentage is the change over the day. When a pair rises, the first currency is getting stronger.",
+    ),
+    "gas_us": ("США", "США", "United States"),
+    "gas_us_note": (
+        "Средняя цена обычного бензина по стране. Источник: Управление энергетической информации США.",
+        "Середня ціна звичайного бензину по країні. Джерело: Управління енергетичної інформації США.",
+        "National average for regular gasoline. Source: US Energy Information Administration.",
+    ),
+    "gas_eu": ("Европа (ЕС)", "Європа (ЄС)", "Europe (EU)"),
+    "gas_eu_note": (
+        "Средняя цена бензина Аи-95 по странам ЕС, с налогами. Источник: Еврокомиссия.",
+        "Середня ціна бензину А-95 у країнах ЄС, з податками. Джерело: Єврокомісія.",
+        "EU average for Euro-super 95, taxes included. Source: European Commission.",
+    ),
+    "gas_note": (
+        "Цены на заправках публикуются раз в неделю и отстают от цены нефти. "
+        "Для сравнения они пересчитаны в доллары за литр.",
+        "Ціни на заправках публікуються раз на тиждень і відстають від ціни нафти. "
+        "Для порівняння їх перераховано в долари за літр.",
+        "Pump prices are published weekly and lag behind crude oil. "
+        "For comparison they are converted to US dollars per litre.",
+    ),
     "no_story": (
         "в ленте новостей об этом нет",
         "у стрічці новин про це немає",
@@ -334,7 +385,7 @@ h1 .weekday { display: block; color: var(--muted); font-weight: 400; }
   font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em;
 }
 .market { margin: 48px 0 0; }
-.market h2 .asof { color: var(--muted); font-weight: 400; }
+.quote .asof { display: block; margin-top: 6px; color: var(--muted); font: 400 11px/1.3 var(--mono); white-space: nowrap; }
 .hours {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 4px 28px;
   margin: 14px 0 4px; color: var(--muted); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em;
@@ -374,7 +425,20 @@ nav .chg { margin-left: 5px; }
 .fact .name, .fact .sub { display: block; color: var(--muted); font-family: var(--mono); font-size: 12px; letter-spacing: 0.02em; }
 .fact .value { display: block; margin: 4px 0 2px; font-size: 20px; font-weight: 500; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
 .fact .what { margin: 8px 0 0; font-size: 15px; color: var(--muted); }
-.earnings .lead { margin: 14px 0 0; font-size: 15px; color: var(--muted); }
+.earnings .lead, .money .lead { margin: 14px 0 0; font-size: 15px; color: var(--muted); }
+.money h3 {
+  margin: 30px 0 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); color: var(--muted);
+  font: 400 12px/1.3 var(--mono); letter-spacing: 0.06em; text-transform: uppercase;
+}
+.money .quotes { border-bottom: 0; }
+.fx {
+  display: grid; grid-template-columns: 1fr auto 76px; gap: 16px; align-items: baseline;
+  padding: 11px 0; border-bottom: 1px solid var(--line);
+}
+.fx .rate { font-size: 17px; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fx .rate .one { color: var(--muted); font-weight: 400; }
+.fx .pct { text-align: right; font-family: var(--mono); font-size: 12px; }
+.fact .unit { color: var(--muted); font-size: 14px; font-weight: 400; }
 .earnings .when-day {
   margin: 22px 0 0; padding-bottom: 8px; border-bottom: 1px solid var(--line); color: var(--muted);
   font: 400 12px var(--mono); letter-spacing: 0.02em;
@@ -784,13 +848,19 @@ def _pulse(data: dict) -> str:
     symbols = [s for s in data.get("pulse") or [] if s in quotes]
     if not symbols:
         return ""
-    # Время последней сделки по первому символу (индекс): в выходной это прошлая сессия.
-    moment = datetime.fromisoformat(quotes[symbols[0]]["time"]).astimezone()
-    asof = _tr([f"· {d}, {moment:%H:%M}" for d in _date(moment.date())], "span", "asof")
+    def asof(q: dict) -> str:
+        """Когда была последняя сделка. У каждой биржи своё время: в её выходной или праздник
+        это прошлая сессия, поэтому дата стоит на каждой карточке, а не одна на весь блок."""
+        try:
+            moment = datetime.fromisoformat(q["time"]).astimezone()
+        except (KeyError, TypeError, ValueError):
+            return ""
+        return _tr([f"{d}, {moment:%H:%M}" for d in _date(moment.date())], "span", "asof")
+
     cards = "".join(
         '<div class="quote">'
         f'<span class="name">{escape(q["name"] if s.startswith("^") else s)}</span>'
-        f'<span class="price">{q["price"]:,.2f}</span>{_pct(q["change"])}'
+        f'<span class="price">{q["price"]:,.2f}</span>{_pct(q["change"])}{asof(q)}'
         f'{_spark(q.get("points") or [], q["prev"], q["change"])}</div>'
         for s, q in ((s, quotes[s]) for s in symbols)
     )
@@ -817,7 +887,7 @@ def _pulse(data: dict) -> str:
     )
     hours = f'<div class="hours" id="hours">{rows}</div>' if rows else ""
     return (
-        f'<section class="market pulse"><h2>{_ui("pulse")} {asof}</h2>{hours}'
+        f'<section class="market pulse"><h2>{_ui("pulse")}</h2>{hours}'
         f'<div class="quotes" tabindex="0">{cards}</div></section>'
     )
 
@@ -944,6 +1014,84 @@ def _earnings(data: dict) -> str:
         f'<section class="market earnings"><h2>{_ui("earnings")}</h2>'
         f'{_ui("earnings_note", "p", "lead")}{"".join(blocks)}</section>'
     )
+
+
+def _money(data: dict, fuel: dict) -> str:
+    """Сырьё, курсы валют и цены на бензин. Любая из трёх частей может отсутствовать."""
+    quotes = data.get("quotes") or {}
+    parts = []
+
+    cards = "".join(
+        '<div class="quote">'
+        f'<span class="name">{_tr([escape(n) for n in names])}</span>'
+        f'<span class="price">${q["price"]:,.2f}</span>{_pct(q["change"])}'
+        f'{_ui(unit, "span", "asof")}'
+        f'{_spark(q.get("points") or [], q["prev"], q["change"])}</div>'
+        for symbol, names, unit in COMMODITIES
+        for q in [quotes.get(symbol)] if q
+    )
+    if cards:
+        parts.append(f'<h3>{_ui("commodities")}</h3><div class="quotes" tabindex="0">{cards}</div>')
+
+    rows = "".join(
+        f'<div class="fx"><span class="co">{_tr([escape(n) for n in names])}</span>'
+        f'<span class="rate"><span class="one">{one} =</span> {q["price"]:,.{digits}f} {sign}</span>'
+        f'<span class="pct">{_pct(q["change"])}</span></div>'
+        for symbol, names, one, sign, digits in CURRENCIES
+        for q in [quotes.get(symbol)] if q
+    )
+    if rows:
+        parts.append(f'<h3>{_ui("currencies")}</h3>{rows}{_ui("fx_note", "p", "lead")}')
+
+    def tile(name: str, note: str, usd: float | None, was: float | None, local: list[str], period: str) -> str:
+        """Плитка региона: главная цифра — доллары за литр, ниже цена в местных единицах."""
+        day = date.fromisoformat(period)
+        sub = [f"{text} · {week} {day:%d.%m}" for text, week in zip(local, UI["week_to"])]
+        if usd is None:  # нет курса для пересчёта — показываем только местную цену
+            value, sub = local[2].split(" ")[0], [f"{week} {day:%d.%m}" for week in UI["week_to"]]
+            unit = ""
+        else:
+            value, unit = f"${usd:.2f}", f' <span class="unit">{_ui("per_litre")}</span>'
+            if was is not None and f"{was:.2f}" != f"{usd:.2f}":
+                sub = [f"{text} · {label} ${was:.2f}" for text, label in zip(sub, UI["was"])]
+        return (
+            f'<div class="fact"><span class="name">{_ui(name)}</span>'
+            f'<span class="value">{value}{unit}</span>'
+            f'<span class="sub">{_tr([escape(t) for t in sub])}</span>{_ui(note, "p", "what")}</div>'
+        )
+
+    tiles = []
+    try:
+        us = fuel.get("us")
+        if us:
+            prev = us.get("prev")
+            tiles.append(tile(
+                "gas_us", "gas_us_note", us["value"] / LITRES_PER_GALLON,
+                prev / LITRES_PER_GALLON if prev else None,
+                [f"${us['value']:.2f} {unit}" for unit in UI["per_gallon"]], us["period"],
+            ))
+    except (KeyError, TypeError, ValueError):
+        pass
+    try:
+        eu = fuel.get("eu")
+        if eu:
+            rate = (quotes.get("EURUSD=X") or {}).get("price")  # долларов за евро
+            prev = eu.get("prev")
+            tiles.append(tile(
+                "gas_eu", "gas_eu_note", eu["value"] * rate if rate else None,
+                prev * rate if prev and rate else None,
+                [f"€{eu['value']:.2f} {unit}" for unit in UI["per_litre"]], eu["period"],
+            ))
+    except (KeyError, TypeError, ValueError):
+        pass
+    if tiles:
+        parts.append(
+            f'<h3>{_ui("gasoline")}</h3><div class="facts">{"".join(tiles)}</div>{_ui("gas_note", "p", "lead")}'
+        )
+
+    if not parts:
+        return ""
+    return f'<section class="market money"><h2>{_ui("money")}</h2>{"".join(parts)}</section>'
 
 
 def _filings(data: dict, today: date) -> str:
@@ -1336,6 +1484,7 @@ def render(cfg: Config, conn, *, hours: int = 24) -> str:
 {_pulse(market)}
 {_brief(_loads(db.latest_brief(conn, hours=hours)))}
 {week_link}
+{_money(market, _loads(db.get(conn, "fuel")[0]))}
 {_movers(market, rows, _loads(db.get(conn, "movers")[0]))}
 {_macro(macro)}
 {_earnings(market)}

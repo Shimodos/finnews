@@ -192,6 +192,13 @@ def test_site_translated(tmp_path):
     client = FakeClient()
     assert build_brief(cfg, conn, client=client)
     assert "уже объяснённые в прошлые дни: Дивиденд; Кредитный дефолтный своп (CDS); CDS" in client.brief_prompt
+    # ...и что читатель уже видел: обзор прошлого дня и время выхода каждой новости
+    db.save_brief(conn, "2026-01-08", json.dumps({lang: {
+        "overview": "Вчерашняя картина", "points": ["Старый сюжет"], "term": "Купон", "term_explained": "",
+    } for lang in ("ru", "uk", "en")}))
+    assert build_brief(cfg, conn, client=client)
+    assert "Обзор прошлого дня (2026-01-08):\nВчерашняя картина\n- Старый сюжет" in client.brief_prompt
+    assert "вышла: сегодня, " in client.brief_prompt and "Сейчас: " in client.brief_prompt
     day_page = (out / days[0]).read_text(encoding="utf-8")
     assert "Обзор &lt;дня&gt;" in day_page and "Заголовок по-русски" in day_page
     assert 'href="archive.html"' in page and 'href="glossary.html"' in page
@@ -372,6 +379,67 @@ def test_earnings(tmp_path):
     assert "прогноз прибыли на акцию</span>" in block and ": $2.41" in block and ": −$0.32" in block
 
 
+def test_money(tmp_path):
+    import io
+    import zipfile
+
+    from finnews import fuel, market, site
+
+    # курс валюты хранится с четырьмя знаками, остальное — с двумя
+    meta = {"regularMarketPrice": 1.09674, "chartPreviousClose": 1.1, "instrumentType": "CURRENCY"}
+    assert market.parse({"meta": meta}, with_points=False)["price"] == 1.0967
+
+    # EIA: название строки лежит во вложенной таблице; берём первую строку Regular
+    html = (
+        '<th class="Series5">11/16/26</th><th class="Series5">11/23/26</th>'
+        '<tr><td><table><tr><td class="DataStub1">Regular</td></tr></table></td>'
+        '<td class="DataB">3.805</td><td class="Current2">3.642</td><td class="DataHist">x</td></tr>'
+        '<tr><td><table><tr><td class="DataStub1">Regular</td></tr></table></td>'
+        '<td class="DataB">9.999</td><td class="Current2">9.999</td><td class="DataHist">x</td></tr>'
+    )
+    assert fuel.parse_eia(html) == {"value": 3.642, "prev": 3.805, "period": "2026-11-23"}
+
+    # Еврокомиссия: xlsx с пустой ячейкой без закрывающего тега перед нужной строкой
+    book = io.BytesIO()
+    with zipfile.ZipFile(book, "w") as z:
+        z.writestr("xl/sharedStrings.xml", "<sst><si><t>in EUR</t></si><si><t>Euro-super 95  (I)</t></si>"
+                                           "<si><t>Austria</t></si><si><t>CE/EC/EG EUR27_2020 (IV)</t></si></sst>")
+        z.writestr("xl/worksheets/sheet1.xml", (
+            '<row><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>'
+            '<row><c r="A2"><v>46349</v></c></row>'
+            '<row><c r="A3" t="s"><v>2</v></c><c r="B3"><v>1570</v></c><c r="E3" s="1"/></row>'
+            '<row><c r="A4" t="s"><v>3</v></c><c r="B4"><v>1777.7697</v></c></row>'
+        ))
+    assert fuel.parse_ec(book.getvalue()) == {"value": 1.778, "period": "2026-11-23"}
+
+    def broken():
+        raise RuntimeError("нет ответа")
+
+    # неделя сменилась — прошлое значение становится «было»; отказ источника не мешает другому
+    old = {"eu": {"value": 1.75, "period": "2026-11-16"}}
+    prices = fuel.refresh(old, {"us": broken, "eu": lambda: {"value": 1.778, "period": "2026-11-23"}})
+    assert prices == {"eu": {"value": 1.778, "period": "2026-11-23", "prev": 1.75}}
+    assert fuel.refresh(prices, {"eu": lambda: {"value": 1.778, "period": "2026-11-23"}}) == prices
+    prices["us"] = {"value": 3.642, "prev": 3.805, "period": "2026-11-23"}
+
+    cfg = Config(db_path=str(tmp_path / "t.db"))
+    conn = db.connect(cfg.db_path)
+    assert 'class="market money"' not in site.render(cfg, conn)  # данных нет — блока нет
+    data = market.snapshot(cfg, get=fake_yahoo)
+    assert "points" in data["quotes"]["BZ=F"] and "points" not in data["quotes"]["EURUSD=X"]
+    data["quotes"]["EURUSD=X"]["price"] = 1.1
+    db.save_market(conn, json.dumps(data))
+    db.put(conn, "fuel", json.dumps(prices))
+    block = site.render(cfg, conn).split('class="market money"')[1].split("</section>")[0]
+    assert block.count('class="quote"') == 4 and "Brent crude" in block and "за унцию" in block
+    assert block.count('class="fx"') == 6 and '<span class="one">1 € =</span> 1.1000 $' in block
+    # бензин: доллары за литр (3.642 / 3.785 и 1.778 × 1.1), ниже — цена в местных единицах
+    assert block.count('class="fact"') == 2
+    assert "$0.96" in block and "$3.64 per gallon · week to 23.11 · was $1.01" in block
+    assert "$1.96" in block and "€1.78 за литр · неделя к 23.11 · было $1.93" in block
+    assert "Сырьё, изменение за день: нефть Brent $100.00" in market.summary(data)
+
+
 def test_build_assets(tmp_path):
     from finnews import site
 
@@ -510,7 +578,11 @@ def test_market(tmp_path):
     # обзор дня получает котировки, чтобы сверять с ними заголовки
     client = FakeClient()
     assert build_brief(cfg, conn, client=client)
-    assert "S&P 500: 101.00, за день +1.00%" in client.brief_prompt
+    assert "S&P 500: 101.00, за день +1.00% (последняя сделка: " in client.brief_prompt
+    # день последней сделки назван относительно «сейчас», чтобы вчерашнее не стало «сегодняшним»
+    from datetime import datetime, timezone
+    line = market.summary(data, datetime(2026, 11, 26, 5, 0, tzinfo=timezone.utc)).splitlines()[0]
+    assert line.endswith("(последняя сделка: среда 25.11, 21:00 — это вчера)")
     assert "Nikkei 225: 100.00" in client.brief_prompt  # биржи Европы и Азии тоже
     assert "tech (XLK) -1.00%" in client.brief_prompt and "NVDA -5.00%" in client.brief_prompt
 

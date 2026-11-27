@@ -17,8 +17,8 @@ https://finnews.app (GitHub Pages со своим доменом). Исходн�
 
 - Установка зависимостей: `uv sync` (без uv: `python -m venv .venv`, `pip install -e .`, pytest отдельно)
 - Тесты: `uv run pytest`
-- Всё для сайта: `uv run finnews update` — collect, prices, macro, filings, score, events, movers, brief, weekly, site
-- Отдельные шаги: `collect`, `prices`, `macro`, `filings`, `score`, `events`, `movers`, `brief`, `weekly`, `site`
+- Всё для сайта: `uv run finnews update` — collect, prices, macro, fuel, filings, score, events, movers, brief, weekly, site
+- Отдельные шаги: `collect`, `prices`, `macro`, `fuel`, `filings`, `score`, `events`, `movers`, `brief`, `weekly`, `site`
 - Только пересобрать страницы из базы, без сети и без трат: `uv run finnews site`
 - Telegram: `uv run finnews run --dry-run`, `digest`, `chat-id`
 
@@ -31,6 +31,9 @@ https://finnews.app (GitHub Pages со своим доменом). Исходн�
 - `finnews/hours.py` — ближайшие торговые сессии бирж с праздниками и короткими днями
   (библиотека `exchange_calendars`, без сети); попадают в снимок котировок под ключом `hours`.
 - `finnews/earnings.py` — календарь отчётов (Nasdaq).
+- `finnews/fuel.py` — недельные цены на бензин: США (EIA, разбор HTML-таблицы) и ЕС
+  (Еврокомиссия, xlsx читается без библиотек); лежат в `store` под ключом `fuel`. Сырьё и курсы
+  валют идут в общем снимке котировок (`market.COMMODITIES`, `market.CURRENCIES`).
 - `finnews/edgar.py` — свежие отчёты компаний (10-K, 10-Q, 8-K) из SEC EDGAR; лежат в `store`
   под ключом `filings`. Работает, только если задан `SEC_CONTACT`.
 - `finnews/macro.py` — макроданные из официальных источников (ФРБ Нью-Йорка, BLS, ЕЦБ, Eurostat);

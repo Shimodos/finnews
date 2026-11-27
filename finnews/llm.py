@@ -51,7 +51,9 @@ BRIEF_SYSTEM = """Ты объясняешь начинающему инвест�
 из этих новостей, не придумывай цифры и события.
 
 Перед новостями могут идти котировки — это точные данные бирж; у каждого индекса указано, \
-на какое время они сняты (биржи разных стран работают в разные часы). Если они есть:
+когда была последняя сделка и какой это день относительно сегодняшнего: сегодня, вчера или \
+раньше (биржи разных стран работают в разные часы). Если они есть:
+- называй день так, как он указан: не пиши «сегодня» о сессии, которая была вчера или раньше;
 - куда и насколько двигался рынок за день, бери только из котировок, а не из заголовков;
 - цифра из заголовка, которая расходится с котировками, обычно относится к другому периоду \
 (неделя, месяц, от максимума) — тогда либо прямо назови этот период, либо не приводи цифру;
@@ -61,6 +63,11 @@ BRIEF_SYSTEM = """Ты объясняешь начинающему инвест�
 Могут идти и показатели экономики (ставки, инфляция, безработица) — это официальная статистика. \
 Опирайся на неё, когда объясняешь новости о ставках и ценах, но не выдавай давно известную \
 цифру за событие дня.
+
+У каждой новости указано, когда она вышла. Может быть дан и обзор прошлого дня — его читатель \
+уже видел. Тогда не пересказывай его заново: начинай с того, что произошло после него, а \
+прежние сюжеты упоминай, только если у них появилось продолжение или они по-прежнему главные. \
+Если нового мало, так и скажи, а не выдавай вчерашнее за свежее.
 
 Верни один и тот же обзор на трёх языках — ru (русский), uk (украинский), en (английский):
 - overview — 2-3 предложения: общая картина дня, что двигает рынок и в какую сторону.
@@ -391,15 +398,25 @@ def build_brief(
     if not rows:
         return False
     client = client or anthropic.Anthropic()
+    now = datetime.now().astimezone()
+
+    def published(row) -> str:
+        """Когда вышла новость — чтобы модель отличала свежее от вчерашнего."""
+        try:
+            moment = datetime.fromisoformat(row["published"]).astimezone(now.tzinfo)
+        except (TypeError, ValueError):
+            return "-"
+        days = (now.date() - moment.date()).days
+        return f"{'сегодня' if days <= 0 else 'вчера' if days == 1 else f'{days} дн. назад'}, {moment:%H:%M}"
+
     listing = "\n\n".join(
-        f"[{r['score']}/10] {r['title']}\nисточник: {r['source']}\nтикеры: {r['tickers'] or '-'}\n"
-        f"описание: {r['summary'][:600]}"
+        f"[{r['score']}/10] {r['title']}\nвышла: {published(r)}\nисточник: {r['source']}\n"
+        f"тикеры: {r['tickers'] or '-'}\nописание: {r['summary'][:600]}"
         for r in rows
     )
-    now = datetime.now().astimezone()
     try:
-        quotes = market.summary(json.loads(db.latest_market(conn, hours=hours) or "{}"))
-    except (json.JSONDecodeError, KeyError, TypeError):
+        quotes = market.summary(json.loads(db.latest_market(conn, hours=hours) or "{}"), now)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         quotes = ""
     quotes = f"Котировки:\n{quotes}\n\n" if quotes else ""
     try:
@@ -411,24 +428,31 @@ def build_brief(
     # Термины прошлых дней — чтобы «термин дня» не повторялся и словарик пополнялся новым.
     # Сегодняшний в список не входит: при пересборке обзора в тот же день он может остаться.
     explained = []
+    previous = ""  # обзор последнего прошлого дня: читатель его уже видел
     for brief in db.all_briefs(conn):
-        if brief["day"] == now.date().isoformat():
+        if brief["day"] >= now.date().isoformat():
             continue
         try:
-            term = str(json.loads(brief["data"])["ru"]["term"]).strip()
+            text = json.loads(brief["data"])["ru"]
+            term = str(text["term"]).strip()
         except (json.JSONDecodeError, KeyError, TypeError):
             continue
+        if not previous and text.get("overview"):
+            points = "\n".join(f"- {p}" for p in text.get("points") or [])
+            previous = f"Обзор прошлого дня ({brief['day']}):\n{text['overview']}\n{points}\n\n"
         if term and term not in explained:
             explained.append(term)
     if explained:
         quotes += "Термины, уже объяснённые в прошлые дни: " + "; ".join(explained[:TERMS_LIMIT]) + "\n\n"
+    quotes += previous
     response = client.messages.parse(
         model=cfg.digest_model,
         max_tokens=16000,
         output_config={"effort": "medium"},
         system=BRIEF_SYSTEM,
         messages=[
-            {"role": "user", "content": f"Дата: {now:%d.%m.%Y}\n\n{quotes}Новости:\n\n{listing}"}
+            {"role": "user", "content": f"Сейчас: {market.WEEKDAYS[now.weekday()]} {now:%d.%m.%Y}, {now:%H:%M}\n\n"
+                                        f"{quotes}Новости:\n\n{listing}"}
         ],
         output_format=Brief,
     )

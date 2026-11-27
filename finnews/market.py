@@ -61,6 +61,25 @@ LARGE_CAPS = (
     "QCOM", "TXN", "GE", "UBER", "PLTR", "WFC", "MS", "T", "VZ", "SBUX",
 )
 
+# Сырьё: фьючерсы с ближайшей поставкой, цена в долларах. Название здесь — для модели;
+# названия и единицы для страницы — в site.py.
+COMMODITIES = {
+    "BZ=F": "нефть Brent",
+    "CL=F": "нефть WTI",
+    "GC=F": "золото",
+    "SI=F": "серебро",
+}
+
+# Валютные пары: сколько второй валюты дают за единицу первой.
+CURRENCIES = {
+    "EURUSD=X": "EUR/USD",
+    "GBPUSD=X": "GBP/USD",
+    "USDJPY=X": "USD/JPY",
+    "USDCNY=X": "USD/CNY",
+    "USDUAH=X": "USD/UAH",
+    "EURUAH=X": "EUR/UAH",
+}
+
 MAX_POINTS = 32
 
 
@@ -71,11 +90,13 @@ def parse(result: dict, *, with_points: bool) -> dict | None:
     prev = meta.get("chartPreviousClose") or meta.get("previousClose")
     if not price or not prev:
         return None
+    kind = meta.get("instrumentType") or ""
+    digits = 4 if kind == "CURRENCY" else 2  # у курсов валют значимы четыре знака
     item = {
         "name": meta.get("shortName") or meta.get("symbol") or "",
-        "type": meta.get("instrumentType") or "",
-        "price": round(float(price), 2),
-        "prev": round(float(prev), 2),
+        "type": kind,
+        "price": round(float(price), digits),
+        "prev": round(float(prev), digits),
         "change": round((float(price) - float(prev)) / float(prev) * 100, 2),
         "time": datetime.fromtimestamp(meta.get("regularMarketTime") or 0, timezone.utc).isoformat(
             timespec="seconds"
@@ -110,15 +131,30 @@ def _signed(change: float) -> str:
     return f"{change:+.2f}%"
 
 
-def summary(data: dict) -> str:
+WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
+
+
+def _when(iso: str, now: datetime) -> str:
+    """Когда была последняя сделка и как этот день соотносится с сегодняшним.
+
+    Модель иначе называет вчерашнее закрытие «сегодняшним»: утром биржи ещё не открылись.
+    """
+    moment = datetime.fromisoformat(iso).astimezone(now.tzinfo)
+    days = (now.date() - moment.date()).days
+    ago = "сегодня" if days <= 0 else "вчера" if days == 1 else f"{days} дн. назад"
+    return f"{WEEKDAYS[moment.weekday()]} {moment:%d.%m}, {moment:%H:%M} — это {ago}"
+
+
+def summary(data: dict, now: datetime | None = None) -> str:
     """Котировки текстом — для модели, чтобы обзор дня опирался на данные биржи."""
     quotes = data.get("quotes") or {}
     if not quotes:
         return ""
+    now = now or datetime.now().astimezone()
     # У каждой биржи своя последняя сессия, поэтому дата стоит у каждой строки.
     lines = [
         f"{quotes[s]['name']}: {quotes[s]['price']:,.2f}, за день {_signed(quotes[s]['change'])}"
-        f" (данные на {quotes[s]['time'][:10]} {quotes[s]['time'][11:16]} UTC)"
+        f" (последняя сделка: {_when(quotes[s]['time'], now)})"
         for s in data.get("pulse") or []
         if s in quotes
     ]
@@ -132,6 +168,18 @@ def summary(data: dict) -> str:
     leaders = [f"{s} {_signed(quotes[s]['change'])}" for s in movers(data)]
     if leaders:
         lines.append("Сильнее всего изменились среди крупных компаний США: " + "; ".join(leaders))
+    goods = [
+        f"{name} ${quotes[s]['price']:,.2f} ({_signed(quotes[s]['change'])})"
+        for s, name in COMMODITIES.items() if s in quotes
+    ]
+    if goods:
+        lines.append("Сырьё, изменение за день: " + "; ".join(goods))
+    rates = [
+        f"{name} {quotes[s]['price']:,.4f} ({_signed(quotes[s]['change'])})"
+        for s, name in CURRENCIES.items() if s in quotes
+    ]
+    if rates:
+        lines.append("Курсы валют, изменение за день: " + "; ".join(rates))
     return "\n".join(lines)
 
 
@@ -180,12 +228,15 @@ def snapshot(cfg: Config, *, get=None) -> dict:
     """Собирает котировки. get(symbol) -> JSON ответа; по умолчанию запрос к Yahoo."""
     get = get or _http_get
     pulse = list(dict.fromkeys([*INDEXES, *cfg.watchlist]))
-    symbols = list(dict.fromkeys([*pulse, *SECTOR_SYMBOLS.values(), *LARGE_CAPS]))
+    symbols = list(dict.fromkeys(
+        [*pulse, *SECTOR_SYMBOLS.values(), *LARGE_CAPS, *COMMODITIES, *CURRENCIES]
+    ))
+    charted = {*pulse, *COMMODITIES}  # кому на странице рисуется график
 
     def load(symbol: str):
         try:
             result = get(symbol)["chart"]["result"][0]
-            return symbol, parse(result, with_points=symbol in pulse)
+            return symbol, parse(result, with_points=symbol in charted)
         except Exception as error:  # noqa: BLE001 - источник неофициальный, отказ не критичен
             log.warning("Котировка %s недоступна: %s", symbol, error)
             return symbol, None
